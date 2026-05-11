@@ -254,40 +254,52 @@ def _save_cookies(driver):
 
 
 def _ensure_login(driver):
-    """先试 cookie 恢复，失败则账号密码登录"""
-    u, p = cfg["ig_username"], cfg["ig_password"]
-    if not u or not p:
-        return
+    """先试 cookie 恢复，失败则账号密码登录，均失败则抛异常提示用 cookies"""
+    # 1. 优先 cookie 恢复
     if _load_saved_cookies(driver):
         return
+
+    u, p = cfg["ig_username"], cfg["ig_password"]
+    if not u or not p:
+        raise RuntimeError(
+            "Cookie 已过期且未配置 IG_USERNAME/IG_PASSWORD，"
+            "请用 import_cookies.py 导入新的 cookies"
+        )
+
+    # 2. 降级为密码登录
     logger.info("Cookie expired, logging in with password...")
+    try:
+        driver.get("https://www.instagram.com/accounts/login/")
+        wait = WebDriverWait(driver, 15)
+        wait.until(EC.presence_of_element_located((By.NAME, "email"))).send_keys(u)
+        time.sleep(1)
+        driver.find_element(By.NAME, "pass").send_keys(p)
+        time.sleep(1)
+        driver.find_element(By.XPATH, "//div[@aria-label='登录']").click()
+        time.sleep(8)
 
-    driver.get("https://www.instagram.com/accounts/login/")
-    wait = WebDriverWait(driver, 15)
-    wait.until(EC.presence_of_element_located((By.NAME, "email"))).send_keys(u)
-    time.sleep(1)
-    driver.find_element(By.NAME, "pass").send_keys(p)
-    time.sleep(1)
-    driver.find_element(By.XPATH, "//div[@aria-label='登录']").click()
-    time.sleep(8)
-
-    for _ in range(2):
-        for _ in range(3):
+        for _ in range(2):
+            for _ in range(3):
+                try:
+                    driver.find_element(By.XPATH, "//div[@role='button']").click()
+                    time.sleep(1)
+                    break
+                except Exception:
+                    time.sleep(2)
             try:
-                driver.find_element(By.XPATH, "//div[@role='button']").click()
+                driver.find_element(By.XPATH, "//div[@role='dialog']//button[2]").click()
                 time.sleep(1)
-                break
             except Exception:
-                time.sleep(2)
-        try:
-            driver.find_element(By.XPATH, "//div[@role='dialog']//button[2]").click()
-            time.sleep(1)
-        except Exception:
-            pass
+                pass
 
-    logger.info("Login OK")
-    _save_cookies(driver)
-    _close_login_dialog(driver)
+        logger.info("Login OK")
+        _save_cookies(driver)
+        _close_login_dialog(driver)
+    except Exception as e:
+        raise RuntimeError(
+            f"密码登录失败 ({e})，Instagram 可能要求手机验证。"
+            "请用浏览器手动登录后导出 cookies，再用 import_cookies.py 导入"
+        )
 
 # -----------------------------------------------------------
 # 工具
