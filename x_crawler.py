@@ -20,6 +20,7 @@ import pymysql
 import redis as redis_module
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
@@ -286,7 +287,7 @@ def _ensure_login(driver):
 
 
 # -----------------------------------------------------------
-# 图像 URL 修复
+# 列表页提取
 # -----------------------------------------------------------
 
 _re_tweet_id = re.compile(r"/status/(\d+)")
@@ -310,39 +311,128 @@ def _fix_image_url(url):
         return f"{base}?format=jpg&name=orig"
 
 
-# -----------------------------------------------------------
-# 推文详情页提取图片
-# -----------------------------------------------------------
-
-def _extract_images_from_tweet(driver, tweet_url: str, username: str) -> List[str]:
-    """进入推文详情页，提取所有图片 URL"""
-    driver.get(tweet_url)
-    time.sleep(2)
-
+def _extract_grid_thumbnail(link) -> Optional[str]:
+    """单图推文：从列表页链接中提取缩略图 URL 并转原图"""
     try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "article"))
-        )
+        img = link.find_element(By.XPATH, ".//img")
+        return _fix_image_url(img.get_attribute("src"))
+    except Exception:
+        return None
+
+
+def _is_multi_image(link) -> bool:
+    """检测推文是否有多张图（X 用 aria-label 标记）"""
+    try:
+        el = link.find_elements(By.XPATH, ".//div[@aria-label and contains(@aria-label, 'Image')]")
+        if el:
+            label = el[0].get_attribute("aria-label") or ""
+            # X 的图片 aria-label 如 "Image 1 of 3"
+            if "of" in label:
+                parts = label.split("of")
+                if len(parts) == 2 and parts[1].strip().isdigit():
+                    return int(parts[1].strip()) > 1
     except Exception:
         pass
+    return False
 
-    image_urls = []
+
+def _extract_gallery_images(driver, link) -> List[str]:
+    """点击多图推文，在 gallery 弹窗中翻页提取所有图片 URL"""
+    grid_url = driver.current_url
+
+    try:
+        link.click()
+    except Exception:
+        return []
+    time.sleep(2)
+
+    # X 点击后通常打开一个侧边/弹窗 panel
+    if driver.current_url != grid_url:
+        # 导航到了推文页（旧版 X）
+        images = _extract_images_from_detail(driver)
+        driver.back()
+        time.sleep(2)
+        return images
+
+    # 弹窗模式：获取当前可见图片，然后翻页
+    images = _extract_gallery_slides(driver)
+    _close_gallery(driver)
+    return images
+
+
+def _extract_gallery_slides(driver) -> List[str]:
+    """在弹窗中循环翻页获取所有图片"""
+    images = []
+    seen = set()
+
+    def _grab():
+        # 弹窗里的 img — 多种可能的选择器
+        xpaths = [
+            "//div[@aria-label='Image']//img",
+            "//div[@role='dialog']//img",
+            "//div[@data-testid='swipe-to-dismiss']//img",
+            "//article//div[@data-testid='tweetPhoto']//img",
+        ]
+        for xp in xpaths:
+            for img in driver.find_elements(By.XPATH, xp):
+                src = img.get_attribute("src")
+                fixed = _fix_image_url(src)
+                if fixed and fixed not in seen:
+                    seen.add(fixed)
+                    images.append(fixed)
+
+    _grab()
+    logger.info(f"  Gallery opened, initial: {len(images)} images")
+
+    no_new_streak = 0
+    for _ in range(50):
+        before = len(images)
+        try:
+            next_btn = driver.find_element(By.XPATH, "//button[@aria-label='Next']")
+            next_btn.click()
+            time.sleep(1)
+            _grab()
+        except Exception:
+            break
+        if len(images) > before:
+            no_new_streak = 0
+        else:
+            no_new_streak += 1
+            if no_new_streak >= 3:
+                break
+
+    return images
+
+
+def _extract_images_from_detail(driver) -> List[str]:
+    """从推文详情页提取图片（降级方案）"""
+    images = []
     try:
         imgs = driver.find_elements(
             By.XPATH,
             "//article[@data-testid='tweet']//div[@data-testid='tweetPhoto']//img"
         )
         for img in imgs:
-            src = img.get_attribute("src")
-            fixed = _fix_image_url(src)
-            if fixed and fixed not in image_urls:
-                image_urls.append(fixed)
+            fixed = _fix_image_url(img.get_attribute("src"))
+            if fixed and fixed not in images:
+                images.append(fixed)
     except Exception:
         pass
+    return images
 
-    if image_urls:
-        logger.debug(f"  {len(image_urls)} images from tweet")
-    return image_urls
+
+def _close_gallery(driver):
+    """关闭 gallery 弹窗"""
+    try:
+        close_btn = driver.find_element(By.XPATH, "//button[@aria-label='Close']")
+        close_btn.click()
+        time.sleep(1)
+    except Exception:
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(1)
+        except Exception:
+            pass
 
 
 # -----------------------------------------------------------
@@ -419,8 +509,9 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
             if cursor_url is None and _is_processed(user_id, tweet_id):
                 continue
 
-            # 进入推文详情页提取图片
-            image_urls = _extract_images_from_tweet(driver, clean, user_id)
+            # ---- 点击推文弹窗提取图片 ----
+            image_urls = _extract_gallery_images(driver, link)
+            dom_changed = True
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
@@ -464,6 +555,10 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                     since_cursor_save = 0
 
             time.sleep(0.5)
+
+            if dom_changed:
+                # gallery 弹窗关闭后 DOM 恢复，跳出当前循环，下轮 scroll 重新找链接
+                break
 
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")
