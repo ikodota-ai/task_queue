@@ -57,6 +57,9 @@ def load_config(env_file: str = None):
         "ig_chromedriver_path": os.getenv("IG_CHROMEDRIVER_PATH", ""),
         "ig_username": os.getenv("IG_USERNAME", ""),
         "ig_password": os.getenv("IG_PASSWORD", ""),
+
+        # X (Twitter)
+        "x_auth_token": os.getenv("X_AUTH_TOKEN", ""),
     }
 
 
