@@ -112,7 +112,7 @@ class Producer:
             }.get(key, "unknown_task")
 
             try:
-                self._tq.enqueue(queue_name, function_name, row["user_id"])
+                self._tq.enqueue(queue_name, function_name, row["user_id"], row["id"])
                 self._mark_queued(row["id"])
                 count += 1
                 logger.info(f"Enqueued {queue_name} user_id={row['user_id']} (task_id={row['id']})")
@@ -154,13 +154,31 @@ class Producer:
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    producer = Producer()
-    producer.connect()
-    producer.run()
+    # 单实例锁：防止重复运行
+    import os as _os
+    _pidfile = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".producer.pid")
+    if _os.path.exists(_pidfile):
+        try:
+            with open(_pidfile) as f:
+                old_pid = int(f.read().strip())
+            _os.kill(old_pid, 0)
+            print(f"Producer is already running (PID {old_pid}). Exiting.")
+            sys.exit(1)
+        except (OSError, ValueError):
+            _os.remove(_pidfile)
+    with open(_pidfile, "w") as f:
+        f.write(str(_os.getpid()))
+
+    try:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+        producer = Producer()
+        producer.connect()
+        producer.run()
+    finally:
+        _os.remove(_pidfile)
 
 
 if __name__ == "__main__":

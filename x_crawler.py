@@ -87,7 +87,7 @@ def _lookup_star_id(user_id: str) -> Optional[int]:
     try:
         cur = db.cursor()
         cur.execute(
-            "SELECT id FROM la_star_info WHERE JSON_UNQUOTE(JSON_EXTRACT(original, '$.twitter')) = %s",
+            "SELECT id FROM la_star_info WHERE twitter = %s",
             (user_id,),
         )
         row = cur.fetchone()
@@ -107,6 +107,40 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
         )
         db.commit()
         return cur.lastrowid
+    finally:
+        db.close()
+
+
+# -----------------------------------------------------------
+# 抓取任务状态跟踪
+# -----------------------------------------------------------
+
+def _update_crawl_status(db_task_id: int, status: str):
+    """更新 la_crawl_tasks 状态"""
+    db = _get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, updated_at = NOW() WHERE id = %s",
+            (status, db_task_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+def _is_full_crawl_done(user_id: str) -> bool:
+    """检查用户全量抓取是否已完成"""
+    db = _get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            f"SELECT status FROM {cfg['table_prefix']}crawl_tasks "
+            "WHERE platform = 'x' AND user_id = %s AND task_type = 'full' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row is not None and row[0] == "done"
     finally:
         db.close()
 
@@ -311,8 +345,17 @@ def _fix_image_url(url):
         return f"{base}?format=jpg&name=orig"
 
 
+def _has_gallery_icon(link) -> bool:
+    """检测列表页推文链接内是否包含多图 SVG 图标"""
+    try:
+        svg = link.find_elements(By.XPATH, ".//*[local-name()='svg']")
+        return len(svg) > 0
+    except Exception:
+        return False
+
+
 def _extract_grid_thumbnail(link) -> Optional[str]:
-    """单图推文：从列表页链接中提取缩略图 URL 并转原图"""
+    """单图推文：从列表页网格提取缩略图 URL 转原图"""
     try:
         img = link.find_element(By.XPATH, ".//img")
         return _fix_image_url(img.get_attribute("src"))
@@ -320,119 +363,46 @@ def _extract_grid_thumbnail(link) -> Optional[str]:
         return None
 
 
-def _is_multi_image(link) -> bool:
-    """检测推文是否有多张图（X 用 aria-label 标记）"""
-    try:
-        el = link.find_elements(By.XPATH, ".//div[@aria-label and contains(@aria-label, 'Image')]")
-        if el:
-            label = el[0].get_attribute("aria-label") or ""
-            # X 的图片 aria-label 如 "Image 1 of 3"
-            if "of" in label:
-                parts = label.split("of")
-                if len(parts) == 2 and parts[1].strip().isdigit():
-                    return int(parts[1].strip()) > 1
-    except Exception:
-        pass
-    return False
-
-
-def _extract_gallery_images(driver, link) -> List[str]:
-    """点击多图推文，在 gallery 弹窗中翻页提取所有图片 URL"""
-    grid_url = driver.current_url
-
+def _extract_images_from_tweet(driver, link) -> List[str]:
+    """点击列表页推文 → 导航到详情页 → 提取所有图片 URL（含翻页）"""
     try:
         link.click()
     except Exception:
         return []
     time.sleep(2)
 
-    # X 点击后通常打开一个侧边/弹窗 panel
-    if driver.current_url != grid_url:
-        # 导航到了推文页（旧版 X）
-        images = _extract_images_from_detail(driver)
-        driver.back()
-        time.sleep(2)
-        return images
-
-    # 弹窗模式：获取当前可见图片，然后翻页
-    images = _extract_gallery_slides(driver)
-    _close_gallery(driver)
-    return images
-
-
-def _extract_gallery_slides(driver) -> List[str]:
-    """在弹窗中循环翻页获取所有图片"""
     images = []
     seen = set()
 
     def _grab():
-        # 弹窗里的 img — 多种可能的选择器
-        xpaths = [
-            "//div[@aria-label='Image']//img",
-            "//div[@role='dialog']//img",
-            "//div[@data-testid='swipe-to-dismiss']//img",
-            "//article//div[@data-testid='tweetPhoto']//img",
-        ]
-        for xp in xpaths:
-            for img in driver.find_elements(By.XPATH, xp):
-                src = img.get_attribute("src")
-                fixed = _fix_image_url(src)
-                if fixed and fixed not in seen:
-                    seen.add(fixed)
-                    images.append(fixed)
+        for img in driver.find_elements(
+            By.XPATH,
+            "//div[@data-testid='tweetPhoto']//img"
+        ):
+            src = img.get_attribute("src")
+            fixed = _fix_image_url(src)
+            if fixed and fixed not in seen:
+                seen.add(fixed)
+                images.append(fixed)
 
     _grab()
-    logger.info(f"  Gallery opened, initial: {len(images)} images")
 
-    no_new_streak = 0
+    # 多图翻页
     for _ in range(50):
-        before = len(images)
+        # before = len(images)
         try:
-            next_btn = driver.find_element(By.XPATH, "//button[@aria-label='Next']")
+            next_btn = driver.find_element(By.XPATH, "//div(@aria-roledescription='carousel')//button[@aria-label='Next slide']")
             next_btn.click()
-            time.sleep(1)
+            time.sleep(0.8)
             _grab()
         except Exception:
-            break
-        if len(images) > before:
-            no_new_streak = 0
-        else:
-            no_new_streak += 1
-            if no_new_streak >= 3:
-                break
+            break #可能是没有对象执行click事件失败
+        # if len(images) == before:
+        #     break
 
+    driver.back()
+    time.sleep(1.5)
     return images
-
-
-def _extract_images_from_detail(driver) -> List[str]:
-    """从推文详情页提取图片（降级方案）"""
-    images = []
-    try:
-        imgs = driver.find_elements(
-            By.XPATH,
-            "//article[@data-testid='tweet']//div[@data-testid='tweetPhoto']//img"
-        )
-        for img in imgs:
-            fixed = _fix_image_url(img.get_attribute("src"))
-            if fixed and fixed not in images:
-                images.append(fixed)
-    except Exception:
-        pass
-    return images
-
-
-def _close_gallery(driver):
-    """关闭 gallery 弹窗"""
-    try:
-        close_btn = driver.find_element(By.XPATH, "//button[@aria-label='Close']")
-        close_btn.click()
-        time.sleep(1)
-    except Exception:
-        try:
-            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-            time.sleep(1)
-        except Exception:
-            pass
 
 
 # -----------------------------------------------------------
@@ -449,7 +419,7 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
     time.sleep(5)
 
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 8).until(
             EC.presence_of_element_located((By.XPATH, "//article"))
         )
     except Exception:
@@ -478,9 +448,9 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
     for scroll_idx in range(500):
         links = driver.find_elements(
             By.XPATH,
-            "//a[contains(@href, '/status/')]",
+            "//a[contains(@href, '/photo/')]",
         )
-        logger.info(f"Scroll {scroll_idx+1}: {len(links)} tweet links on page")
+        logger.info(f"Scroll {scroll_idx+1}: {len(links)} photo links on page")
 
         new_found = 0
 
@@ -505,13 +475,19 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
             if not tweet_id:
                 continue
 
-            # GUI 跳过已处理
+            # 跳过已处理
             if cursor_url is None and _is_processed(user_id, tweet_id):
                 continue
 
-            # ---- 点击推文弹窗提取图片 ----
-            image_urls = _extract_gallery_images(driver, link)
-            dom_changed = True
+            # ---- 提取图片 ----
+            image_urls: List[str] = []
+
+            if _has_gallery_icon(link):
+                image_urls = _extract_images_from_tweet(driver, link)
+            else:
+                thumb = _extract_grid_thumbnail(link)
+                if thumb:
+                    image_urls = [thumb]
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
@@ -556,10 +532,6 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
             time.sleep(0.5)
 
-            if dom_changed:
-                # gallery 弹窗关闭后 DOM 恢复，跳出当前循环，下轮 scroll 重新找链接
-                break
-
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")
             no_new = 0
@@ -600,17 +572,45 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 # -----------------------------------------------------------
 
 @register_task("x_full_crawl")
-def x_full_crawl(user_id: str) -> str:
-    result = f"full crawl: {_crawl_user(user_id, incremental=False)} images"
-    tq = TaskQueue()
-    tq.redis = _queue_redis()
-    tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id)
-    logger.info(f"Auto-enqueued incremental task for {user_id}")
-    return result
+def x_full_crawl(user_id: str, db_task_id: int = None) -> str:
+    if db_task_id:
+        _update_crawl_status(db_task_id, "processing")
+    try:
+        result = f"full crawl: {_crawl_user(user_id, incremental=False)} images"
+        if db_task_id:
+            _update_crawl_status(db_task_id, "done")
+        # 全量完成后自动投增量
+        tq = TaskQueue()
+        tq.redis = _queue_redis()
+        tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id)
+        logger.info(f"Auto-enqueued incremental task for {user_id}")
+        return result
+    except Exception:
+        if db_task_id:
+            _update_crawl_status(db_task_id, "failed")
+        raise
 
 @register_task("x_incremental_crawl")
-def x_incremental_crawl(user_id: str) -> str:
-    return f"incremental crawl: {_crawl_user(user_id, incremental=True)} images"
+def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
+    # 检查全量是否完成
+    if not _is_full_crawl_done(user_id):
+        msg = f"Skipping incremental for {user_id}: full crawl not done"
+        logger.warning(msg)
+        if db_task_id:
+            _update_crawl_status(db_task_id, "skipped")
+        return msg
+
+    if db_task_id:
+        _update_crawl_status(db_task_id, "processing")
+    try:
+        result = f"incremental crawl: {_crawl_user(user_id, incremental=True)} images"
+        if db_task_id:
+            _update_crawl_status(db_task_id, "done")
+        return result
+    except Exception:
+        if db_task_id:
+            _update_crawl_status(db_task_id, "failed")
+        raise
 
 
 # -----------------------------------------------------------

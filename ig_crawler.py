@@ -91,11 +91,38 @@ def _lookup_star_id(user_id: str) -> Optional[int]:
     try:
         cur = db.cursor()
         cur.execute(
-            "SELECT id FROM la_star_info WHERE JSON_UNQUOTE(JSON_EXTRACT(original, '$.instagram')) = %s",
+            "SELECT id FROM la_star_info WHERE instagram = %s",
             (user_id,),
         )
         row = cur.fetchone()
         return row[0] if row else None
+    finally:
+        db.close()
+
+def _update_crawl_status(db_task_id: int, status: str):
+    db = _get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, updated_at = NOW() WHERE id = %s",
+            (status, db_task_id),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+def _is_full_crawl_done(user_id: str) -> bool:
+    db = _get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            f"SELECT status FROM {cfg['table_prefix']}crawl_tasks "
+            "WHERE platform = 'ig' AND user_id = %s AND task_type = 'full' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row is not None and row[0] == "done"
     finally:
         db.close()
 
@@ -749,18 +776,43 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 # -----------------------------------------------------------
 
 @register_task("ig_full_crawl")
-def ig_full_crawl(user_id: str) -> str:
-    result = f"full crawl: {_crawl_user(user_id, incremental=False)} images"
-    # 全量完成后自动投增量任务，后续无需手动加
-    tq = TaskQueue()
-    tq.redis = _queue_redis()
-    tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id)
-    logger.info(f"Auto-enqueued incremental task for {user_id}")
-    return result
+def ig_full_crawl(user_id: str, db_task_id: int = None) -> str:
+    if db_task_id:
+        _update_crawl_status(db_task_id, "processing")
+    try:
+        result = f"full crawl: {_crawl_user(user_id, incremental=False)} images"
+        if db_task_id:
+            _update_crawl_status(db_task_id, "done")
+        tq = TaskQueue()
+        tq.redis = _queue_redis()
+        tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id)
+        logger.info(f"Auto-enqueued incremental task for {user_id}")
+        return result
+    except Exception:
+        if db_task_id:
+            _update_crawl_status(db_task_id, "failed")
+        raise
 
 @register_task("ig_incremental_crawl")
-def ig_incremental_crawl(user_id: str) -> str:
-    return f"incremental crawl: {_crawl_user(user_id, incremental=True)} images"
+def ig_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
+    if not _is_full_crawl_done(user_id):
+        msg = f"Skipping incremental for {user_id}: full crawl not done"
+        logger.warning(msg)
+        if db_task_id:
+            _update_crawl_status(db_task_id, "skipped")
+        return msg
+
+    if db_task_id:
+        _update_crawl_status(db_task_id, "processing")
+    try:
+        result = f"incremental crawl: {_crawl_user(user_id, incremental=True)} images"
+        if db_task_id:
+            _update_crawl_status(db_task_id, "done")
+        return result
+    except Exception:
+        if db_task_id:
+            _update_crawl_status(db_task_id, "failed")
+        raise
 
 
 # -----------------------------------------------------------

@@ -1,15 +1,13 @@
 """
-X Crawler 真实测试执行脚本
+X Crawler 测试：phinyanech 全量 → 增量
 
 用法:
     source venv/bin/activate
-    python tests/run_x_crawler.py                    # 只入队检查
-    python tests/run_x_crawler.py --start            # 入队 + 信息 + 提示启动命令
+    python tests/run_x_crawler.py
 """
-import subprocess
+import time
 import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, ".")
 
 import pymysql
 import redis as r_module
@@ -17,60 +15,44 @@ from task_queue_robust import TaskQueue
 from config import cfg
 
 
-TARGET_USER = "phinyanech"
+TARGET_UID = "phinyanech"
+PLATFORM = "x"
 
 print("=" * 60)
-print(f"X Crawler 测试: {TARGET_USER}")
+print(f"X Crawler 全量+增量测试: {TARGET_UID}")
 print("=" * 60)
 
 # 1. 检查 auth_token
-print("\n[1/5] 检查 X_AUTH_TOKEN ...")
 token = cfg.get("x_auth_token") or ""
 if not token:
-    print("  ERROR: .env 中未设置 X_AUTH_TOKEN!")
-    print("  请编辑 .env，添加: X_AUTH_TOKEN=你的token")
-    print("  获取方式: 浏览器登录 x.com → F12 → Application → Cookies → auth_token")
-    sys.exit(1)
-print(f"  OK (token: ...{token[-4:]})")
+    print("ERROR: .env 中未设置 X_AUTH_TOKEN"); sys.exit(1)
+print(f"[OK] X_AUTH_TOKEN: ...{token[-4:]}")
 
 # 2. 检查 star_id
-print("\n[2/5] 查找 star_id ...")
 db = pymysql.connect(
     host=cfg["mysql_host"], port=cfg["mysql_port"],
     user=cfg["mysql_user"], password=cfg["mysql_password"],
     database=cfg["mysql_db"], charset="utf8mb4",
 )
 cur = db.cursor()
-cur.execute(
-    "SELECT id, name FROM la_star_info "
-    "WHERE JSON_UNQUOTE(JSON_EXTRACT(original, '$.twitter')) = %s",
-    (TARGET_USER,)
-)
+cur.execute("SELECT id, name FROM la_star_info WHERE twitter = %s", (TARGET_UID,))
 row = cur.fetchone()
-db.close()
 if row:
-    star_id, name = row
-    print(f"  OK: star_id={star_id}, name={name}")
+    print(f"[OK] star_id={row[0]} name={row[1]}")
 else:
-    star_id = None
-    print(f"  WARNING: {TARGET_USER} 不在 la_star_info 中，DB 写入会被跳过")
+    print(f"[WARN] No star_id for {TARGET_UID}")
 
-# 3. 检查旧 processed 数据
-print(f"\n[3/5] 检查旧 processed 数据 ...")
-r = r_module.Redis(
-    host=cfg["redis_host"], port=cfg["redis_port"],
-    password=cfg["redis_password"], db=cfg["redis_db"],
-    decode_responses=True,
+# 3. 插入全量任务到 MySQL
+table = cfg["table_prefix"] + "crawl_tasks"
+cur.execute(
+    f"INSERT INTO {table} (platform, task_type, user_id, status) VALUES (%s, %s, %s, 'pending')",
+    (PLATFORM, "full", TARGET_UID),
 )
-processed_key = f"twitter:{TARGET_USER}:processed"
-cnt = r.scard(processed_key)
-if cnt:
-    print(f"  {processed_key}: {cnt} 条已处理")
-else:
-    print(f"  {processed_key}: (空)")
+full_task_id = cur.lastrowid
+db.commit()
+print(f"[OK] Inserted full task id={full_task_id}")
 
-# 4. 清理旧队列 + 入队
-print(f"\n[4/5] 入队全量抓取任务 ...")
+# 4. 清理旧 Redis 队列
 tq = TaskQueue()
 tq.redis = tq.redis.from_url(
     f"redis://:{cfg['queue_redis_password']}@{cfg['queue_redis_host']}:{cfg['queue_redis_port']}/{cfg['queue_redis_db']}"
@@ -78,26 +60,29 @@ tq.redis = tq.redis.from_url(
     else f"redis://{cfg['queue_redis_host']}:{cfg['queue_redis_port']}/{cfg['queue_redis_db']}",
     decode_responses=True,
 )
-for k in tq.redis.keys("*crawl:x*"):
-    tq.redis.delete(k)
-for k in tq.redis.keys("processing_data:*"):
-    tq.redis.delete(k)
+for k in tq.redis.keys("*crawl:x*"): tq.redis.delete(k)
+for k in tq.redis.keys("processing_data:*"): tq.redis.delete(k)
 
-tid = tq.enqueue("crawl:x:full", "x_full_crawl", TARGET_USER)
-print(f"  Task: {tid}")
-print(f"  Queue crawl:x:full: {tq.queue_length('crawl:x:full')} tasks")
+# 5. 检查 producer 是否运行
+import subprocess
+procs = subprocess.run("ps aux | grep 'python.*producer' | grep -v grep", shell=True, capture_output=True, text=True)
+if not procs.stdout.strip():
+    print("[WARN] Producer 未运行，直接入队 Redis（跳过 MySQL 流转）")
+    tid = tq.enqueue("crawl:x:full", "x_full_crawl", TARGET_UID, full_task_id)
+    print(f"[OK] Enqueued: {tid}")
+else:
+    print(f"[OK] Producer running, it will pick up task {full_task_id} in < 30s")
 
-# 5. 启动命令
-print(f"\n[5/5] 执行以下命令启动 X Crawler:")
+# 6. 启动命令
 print()
-print(f"  cd {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}")
+print("=" * 60)
+print("执行以下命令启动 X Crawler:")
+print(f"  cd /home/unis/dev/cc/task_queue")
 print(f"  source venv/bin/activate")
 print(f"  python -u x_crawler.py --mode full")
 print()
+print("监控 MySQL 状态:")
+print(f"  SELECT * FROM {table} WHERE user_id='{TARGET_UID}' ORDER BY id DESC;")
 print("=" * 60)
-print("启动后观察 Chrome 窗口:")
-print("  1. auth_token 登录是否成功")
-print("  2. 是否滚动 media 列表页")
-print("  3. 多图推文是否点击弹出 gallery 并翻页")
-print("  4. 图片 URL 是否加上了 ?format=jpg&name=orig")
-print("=" * 60)
+
+db.close()

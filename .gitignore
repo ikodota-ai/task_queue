@@ -18,3 +18,4 @@ cookies.json
 # OS
 .DS_Store
 Thumbs.db
+.producer.pid
