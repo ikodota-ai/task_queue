@@ -419,6 +419,14 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
 
 def _crawl_user(user_id: str, incremental: bool = False) -> int:
     _start_heartbeat()
+
+    # 全量已完成检查：无游标 + 有已处理 → 上次已跑完，跳过
+    if not incremental:
+        cursor = _get_cursor_url(user_id)
+        if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
+            logger.info(f"Full crawl for {user_id} already completed, skipping")
+            return 0
+
     driver = _get_driver()
     processed = 0
 
