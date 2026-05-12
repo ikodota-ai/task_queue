@@ -10,6 +10,7 @@ x_crawler.py — X (Twitter) 爬虫消费者（任务队列版）
 import hashlib
 import json
 import logging
+import os
 import re
 import signal
 import threading
@@ -224,8 +225,9 @@ def _setup_chrome(headless=False):
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--window-size=1920,1080")
-    if headless:
-        opt.add_argument("--headless")
+    if headless or os.getenv("CHROME_HEADLESS"):
+        opt.add_argument("--headless=new")
+        opt.add_argument("--disable-gpu")
     opt.add_argument(f"--user-data-dir=/tmp/chrome_x_{int(time.time())}")
 
     driver = webdriver.Chrome(service=Service(executable_path=cdp), options=opt)
