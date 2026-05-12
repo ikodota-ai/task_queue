@@ -199,12 +199,30 @@ def api_status():
                     "task_id": tid[:8],
                 })
 
-    # ===== 下载活跃 (仅取前 10) =====
+    # ===== 下载活跃 (取前 10，含用户和帖子) =====
     active_downloads = []
     for q in ["dl:ig", "dl:x"]:
         if queues[q]["processing"]:
-            tids = list(qr.hgetall(f"processing:{q}").keys())[:10]
-            active_downloads.extend([{"queue": q, "task_id": tid[:8]} for tid in tids])
+            tids = list(qr.hgetall(f"processing:{q}").keys())[:12]
+            pipe2 = qr.pipeline()
+            for tid in tids:
+                pipe2.hget(f"task_meta:{q}:{tid}", "args")
+            args_list = pipe2.execute()
+            for j, tid in enumerate(tids):
+                info = {"queue": q, "task_id": tid[:8], "user": "-", "post": "-"}
+                try:
+                    a = eval(args_list[j] or "[]")
+                    if len(a) >= 5:
+                        info["user"] = str(a[4])  # user_id
+                    # 从 save_path 提取 post_id:  image/1065/abc.jpg 或 user/POST_0001.jpg
+                    if len(a) >= 2:
+                        fn = str(a[1]).rsplit("/", 1)[-1]  # 取文件名
+                        # 如果是 POST_0001.jpg 格式，提取 POST
+                        pid = fn.rsplit("_", 1)[0] if "_" in fn else fn[:16]
+                        info["post"] = pid
+                except Exception:
+                    pass
+                active_downloads.append(info)
 
     # ===== 当前活跃抓取详情 (取第一个) =====
     current_crawl = None
@@ -225,7 +243,7 @@ def api_status():
         "recent_tasks": recent_tasks,
         "queues": queues,
         "workers": workers,
-        "active_downloads": len(active_downloads),
+        "active_downloads": active_downloads,
         "dl_pending": sum(q["pending"] for q in queues.values() if q["pending"]),
         "ts": int(time.time()),
     })
@@ -365,7 +383,14 @@ async function refresh(){
     const dli = d.queues['dl:ig']?.pending||0;
     const dlx = d.queues['dl:x']?.pending||0;
     document.getElementById('dl-total').innerText = (d.dl_pending||dli+dlx);
-    document.getElementById('dl-summary').innerHTML = `IG: ${dli} 待下载 | X: ${dlx} 待下载 | 处理中: ${d.active_downloads||0}`;
+    let ds = `IG: ${dli} 待下载 | X: ${dlx} 待下载 | 处理中: ${d.active_downloads?.length||0}`;
+    if(d.active_downloads?.length){
+      ds += '<br>';
+      for(const dl of d.active_downloads.slice(0,6)){
+        ds += `<span style="font-size:10px;color:#7a9ab0">@${dl.user}/${dl.post}</span> `;
+      }
+    }
+    document.getElementById('dl-summary').innerHTML = ds;
 
     // 最近
     let rh = '<tr><th>时间</th><th>平台</th><th>类型</th><th>用户</th><th>状态</th></tr>';
