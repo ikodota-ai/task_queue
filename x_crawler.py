@@ -27,7 +27,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 
 from config import cfg
-from task_queue_robust import register_task, TaskQueue, Worker, _current_task
+from task_queue_robust import register_task, Task, TaskQueue, Worker, _current_task
 
 logger = logging.getLogger("XCrawler")
 
@@ -614,11 +614,13 @@ def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
         if db_task_id:
             _update_crawl_status(db_task_id, "done", count)
         result = f"incremental crawl: {count} images"
-        # 增量自循环
+        # 增量自循环：6 小时后再入队
+        task = Task("x_incremental_crawl", (user_id,), {}, "crawl:x:incr")
         tq = TaskQueue()
         tq.redis = _queue_redis()
-        tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id)
-        logger.info(f"Auto-enqueued next incremental for {user_id}")
+        tq.redis.zadd(tq.retry_key("crawl:x:incr"),
+                      {json.dumps(task.to_dict()): time.time() + 6 * 3600})
+        logger.info(f"Scheduled next incremental for {user_id} in 6h")
         return result
     except Exception:
         if db_task_id:
