@@ -115,15 +115,21 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
 # 抓取任务状态跟踪
 # -----------------------------------------------------------
 
-def _update_crawl_status(db_task_id: int, status: str):
+def _update_crawl_status(db_task_id: int, status: str, images_count: int = None):
     """更新 la_crawl_tasks 状态"""
     db = _get_db()
     try:
         cur = db.cursor()
-        cur.execute(
-            f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, updated_at = NOW() WHERE id = %s",
-            (status, db_task_id),
-        )
+        if images_count is not None:
+            cur.execute(
+                f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, images_count = %s, updated_at = NOW() WHERE id = %s",
+                (status, images_count, db_task_id),
+            )
+        else:
+            cur.execute(
+                f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, updated_at = NOW() WHERE id = %s",
+                (status, db_task_id),
+            )
         db.commit()
     finally:
         db.close()
@@ -576,9 +582,10 @@ def x_full_crawl(user_id: str, db_task_id: int = None) -> str:
     if db_task_id:
         _update_crawl_status(db_task_id, "processing")
     try:
-        result = f"full crawl: {_crawl_user(user_id, incremental=False)} images"
+        count = _crawl_user(user_id, incremental=False)
         if db_task_id:
-            _update_crawl_status(db_task_id, "done")
+            _update_crawl_status(db_task_id, "done", count)
+        result = f"full crawl: {count} images"
         # 全量完成后自动投增量
         tq = TaskQueue()
         tq.redis = _queue_redis()
@@ -603,9 +610,15 @@ def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
     if db_task_id:
         _update_crawl_status(db_task_id, "processing")
     try:
-        result = f"incremental crawl: {_crawl_user(user_id, incremental=True)} images"
+        count = _crawl_user(user_id, incremental=True)
         if db_task_id:
-            _update_crawl_status(db_task_id, "done")
+            _update_crawl_status(db_task_id, "done", count)
+        result = f"incremental crawl: {count} images"
+        # 增量自循环
+        tq = TaskQueue()
+        tq.redis = _queue_redis()
+        tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id)
+        logger.info(f"Auto-enqueued next incremental for {user_id}")
         return result
     except Exception:
         if db_task_id:

@@ -12,9 +12,59 @@ import redis
 
 from config import cfg
 
+from task_queue_robust import TaskQueue
+
 app = Flask(__name__)
 
 _TABLE = cfg["table_prefix"] + "crawl_tasks"
+
+
+def _get_tq():
+    tq = TaskQueue()
+    tq.redis = redis.Redis(
+        host=cfg["queue_redis_host"], port=cfg["queue_redis_port"],
+        password=cfg["queue_redis_password"], db=cfg["queue_redis_db"],
+        decode_responses=True, socket_timeout=5,
+    )
+    return tq
+
+
+@app.route("/api/enqueue", methods=["POST"])
+def api_enqueue():
+    """手动入队：platform=ig/x, type=full/incr, user_id=xxx"""
+    from flask import request
+
+    platform = request.form.get("platform", "").strip().lower()
+    task_type = request.form.get("type", "").strip().lower()
+    user_id = request.form.get("user_id", "").strip()
+    auto_repeat = request.form.get("auto_repeat") == "1"
+
+    if platform not in ("ig", "x") or task_type not in ("full", "incr") or not user_id:
+        return jsonify({"error": "invalid params"}), 400
+
+    # 写入 MySQL
+    db = _get_db()
+    cur = db.cursor()
+    cur.execute(
+        f"INSERT INTO {_TABLE} (platform, task_type, user_id, status) VALUES (%s, %s, %s, 'pending')",
+        (platform, task_type, user_id),
+    )
+    task_id = cur.lastrowid
+    db.commit()
+    db.close()
+
+    # 入队 Redis
+    tq = _get_tq()
+    queue_name = f"crawl:{platform}:{task_type}"
+    func_name = f"{platform}_full_crawl" if task_type == "full" else f"{platform}_incremental_crawl"
+    tid = tq.enqueue(queue_name, func_name, user_id, task_id)
+
+    return jsonify({
+        "ok": True,
+        "db_task_id": task_id,
+        "queue_name": queue_name,
+        "redis_task_id": tid,
+    })
 
 
 def _get_db():
@@ -74,6 +124,28 @@ def api_status():
     today_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     for row in cur.fetchall():
         today_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
+
+    # 工作量汇总：今日/昨日/本周/本月
+    work_periods = {}
+    periods = {
+        "today":    "DATE(updated_at) = CURDATE()",
+        "yesterday":"DATE(updated_at) = CURDATE() - INTERVAL 1 DAY",
+        "week":     "YEARWEEK(updated_at) = YEARWEEK(CURDATE())",
+        "month":    "DATE_FORMAT(updated_at, '%Y%m') = DATE_FORMAT(CURDATE(), '%Y%m')",
+    }
+    for key, cond in periods.items():
+        cur.execute(f"""
+            SELECT platform,
+                   COUNT(DISTINCT user_id) as users,
+                   SUM(images_count) as images
+            FROM {_TABLE}
+            WHERE {cond} AND status = 'done'
+            GROUP BY platform
+        """)
+        work_periods[key] = {}
+        for row in cur.fetchall():
+            work_periods[key][row["platform"]] = {"users": row["users"] or 0, "images": row["images"] or 0}
+
     db.close()
 
     # ===== Redis — 用 pipeline 批量查 =====
@@ -148,6 +220,7 @@ def api_status():
     return jsonify({
         "task_stats": task_stats,
         "today_stats": today_stats,
+        "work": work_periods,
         "current_crawl": current_crawl,
         "recent_tasks": recent_tasks,
         "queues": queues,
@@ -188,8 +261,8 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px}
 <body>
 <h1>&#x25c9; 抓取监控 <span id="clock" style="color:#6a8a9e;font-size:11px;float:right"></span></h1>
 
-<!-- 顶部总览卡 -->
-<div class="row" id="overview"></div>
+<!-- 今日工作量 + 进度总览 -->
+<div class="row" id="overview" style="margin-bottom:8px"></div>
 
 <!-- 中排：左-活跃抓取 + 右-队列 -->
 <div class="row" style="margin-top:10px">
@@ -216,6 +289,24 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px}
   </div>
 </div>
 
+<!-- 手动入队 -->
+<div class="row" style="margin-top:8px">
+  <div style="flex:2">
+    <h2>&#x2795; 手动入队</h2>
+    <form id="enq-form" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap" onsubmit="return enqueue()">
+      <select id="enq-plat" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px">
+        <option value="ig">IG</option><option value="x">X</option>
+      </select>
+      <select id="enq-type" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px">
+        <option value="full">全量</option><option value="incr">增量</option>
+      </select>
+      <input id="enq-user" placeholder="user_id" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;width:140px">
+      <button type="submit" style="background:#5af;color:#000;border:none;padding:4px 12px;border-radius:3px;font-size:11px;cursor:pointer;font-weight:bold">入队</button>
+      <span id="enq-msg" style="font-size:11px;color:#5f5;margin-left:6px"></span>
+    </form>
+  </div>
+</div>
+
 <!-- 最近任务 -->
 <h2>&#x1f4c4; 最近完成</h2>
 <table id="recent"></table>
@@ -227,24 +318,20 @@ async function refresh(){
     const d = await r.json();
     const S = {pending:'yellow', queued:'blue', processing:'blue', done:'green', failed:'red', skipped:'white'};
 
-    // ===== 顶部总览卡：今日进度 =====
+    // ===== 顶部：工作量 + 进度 =====
+    const labels = {today:'今日', yesterday:'昨日', week:'本周', month:'本月'};
     let ov = '';
-    for(const plat of ['ig','x']){
-      const pf = d.today_stats?.[plat] || {};
-      const full = pf.full || {};
-      const incr = pf.incr || {};
-      const fpend = full.pending||0, fproc = full.processing||0, fdone = full.done||0;
-      const ipend = incr.pending||0, iproc = incr.processing||0, idone = incr.done||0;
-      const total = fpend+fproc+fdone+ipend+iproc+idone;
-      const done = fdone+idone+(full.skipped||0)+(incr.skipped||0);
-      ov += `<div class="card" style="border-top:3px solid ${plat=='ig'?'#e4405f':'#1da1f2'}">`;
-      ov += `<div class="l">${plat.toUpperCase()} 今日</div>`;
-      ov += `<div class="row" style="gap:6px;justify-content:center;margin-top:3px">`;
-      ov += `<div style="font-size:10px">全量<br><span class="n green">${fdone}</span></div>`;
-      ov += `<div style="font-size:10px">增量<br><span class="n green">${idone}</span></div>`;
-      ov += `<div style="font-size:10px">完成<br><span class="n blue">${done}</span></div>`;
-      ov += `<div style="font-size:10px">总计<br><span class="n ${total>0?'yellow':'white'}">${total}</span></div>`;
-      ov += `</div></div>`;
+    for(const [plat, color] of [['ig','#e4405f'],['x','#1da1f2']]){
+      const stat = d.today_stats?.[plat] || {};
+      const full = stat.full || {}, incr = stat.incr || {};
+      ov += `<div class="card" style="border-top:3px solid ${color}">`;
+      ov += `<div class="l">${plat.toUpperCase()}</div>`;
+      ov += `<table style="margin-top:2px"><tr><th></th><th>人</th><th>图</th><th>全量</th><th>增量</th></tr>`;
+      for(const [k, lb] of Object.entries(labels)){
+        const w = d.work?.[k]?.[plat] || {};
+        ov += `<tr><td>${lb}</td><td style="color:#5af">${w.users||0}</td><td style="color:#fa0">${w.images||0}</td><td style="color:#5e5">${k==='today'?full.done||0:'-'}</td><td style="color:#5e5">${k==='today'?incr.done||0:'-'}</td></tr>`;
+      }
+      ov += `</table></div>`;
     }
     document.getElementById('overview').innerHTML = ov;
 
@@ -288,6 +375,21 @@ async function refresh(){
 
     document.getElementById('clock').innerText = new Date().toLocaleTimeString();
   }catch(e){}
+}
+async function enqueue(){
+  const plat = document.getElementById('enq-plat').value;
+  const type = document.getElementById('enq-type').value;
+  const uid = document.getElementById('enq-user').value.trim();
+  if(!uid) return false;
+  const body = new URLSearchParams({platform:plat, type, user_id:uid});
+  const r = await fetch('/api/enqueue', {method:'POST', body});
+  const d = await r.json();
+  const el = document.getElementById('enq-msg');
+  if(d.ok){ el.innerText = `OK: ${d.queue_name} #${d.db_task_id}`; document.getElementById('enq-user').value=''; }
+  else el.innerText = 'ERR: '+ (d.error||'?');
+  setTimeout(()=>el.innerText='', 4000);
+  refresh();
+  return false;
 }
 refresh();
 setInterval(refresh, 4000);
