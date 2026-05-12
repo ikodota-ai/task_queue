@@ -19,3 +19,4 @@ cookies.json
 .DS_Store
 Thumbs.db
 .producer.pid
+*.pid
