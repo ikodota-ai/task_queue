@@ -5,7 +5,7 @@
 import json
 import time
 from collections import defaultdict
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify
 
 import pymysql
 import redis
@@ -30,7 +30,7 @@ def _get_queue_redis():
     return redis.Redis(
         host=cfg["queue_redis_host"], port=cfg["queue_redis_port"],
         password=cfg["queue_redis_password"], db=cfg["queue_redis_db"],
-        decode_responses=True,
+        decode_responses=True, socket_timeout=5, socket_connect_timeout=3,
     )
 
 
@@ -46,9 +46,8 @@ def _get_state_redis():
 def api_status():
     db = _get_db()
     qr = _get_queue_redis()
-    sr = _get_state_redis()
 
-    # ===== MySQL 任务概览 =====
+    # ===== MySQL 任务概览 (单次查询) =====
     cur = db.cursor()
     cur.execute(f"""
         SELECT platform, task_type, status, COUNT(*) as cnt
@@ -58,23 +57,33 @@ def api_status():
     for row in cur.fetchall():
         task_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
 
-    # 最近 10 条任务
     cur.execute(f"""
         SELECT id, platform, task_type, user_id, status,
-               DATE_FORMAT(updated_at, '%%m-%%d %%H:%%i') as upd
+               DATE_FORMAT(updated_at, '%m-%d %H:%i') as upd
         FROM {_TABLE} ORDER BY id DESC LIMIT 10
     """)
     recent_tasks = list(cur.fetchall())
+    db.close()
 
-    # ===== Redis 队列状态 =====
-    queues = {}
+    # ===== Redis — 用 pipeline 批量查 =====
+    pipe = qr.pipeline()
     for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr",
               "dl:ig", "dl:x"]:
+        pipe.llen(f"queue:{q}")
+        pipe.hlen(f"processing:{q}")
+        pipe.llen(f"dead:{q}")
+        pipe.zcard(f"retry:{q}")
+    results = pipe.execute()
+
+    queues = {}
+    qnames = ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr",
+              "dl:ig", "dl:x"]
+    for i, q in enumerate(qnames):
         queues[q] = {
-            "pending": qr.llen(f"queue:{q}"),
-            "processing": len(qr.hgetall(f"processing:{q}")),
-            "dead": qr.llen(f"dead:{q}"),
-            "retry": qr.zcard(f"retry:{q}"),
+            "pending": results[i*4] or 0,
+            "processing": results[i*4+1] or 0,
+            "dead": results[i*4+2] or 0,
+            "retry": results[i*4+3] or 0,
         }
 
     # ===== Worker 心跳 =====
@@ -85,53 +94,40 @@ def api_status():
         age = int(time.time() - ts)
         workers[wid] = {"alive": age < 90, "last_seen_sec": age}
 
-    # ===== 正在处理的抓取任务 =====
+    # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
     active_crawls = []
     for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr"]:
-        for tid, expiry in qr.hgetall(f"processing:{q}").items():
-            meta = qr.hgetall(f"task_meta:{q}:{tid}")
-            args_str = meta.get("args", "[]")
-            try:
-                args = eval(args_str)
-                user_id = args[0] if args else "?"
-            except Exception:
+        if queues[q]["processing"]:
+            pipe2 = qr.pipeline()
+            tids = list(qr.hgetall(f"processing:{q}").keys())
+            for tid in tids:
+                pipe2.hget(f"task_meta:{q}:{tid}", "args")
+            args_list = pipe2.execute()
+            for j, tid in enumerate(tids):
                 user_id = "?"
-            active_crawls.append({
-                "queue": q,
-                "user_id": user_id,
-                "task_id": tid[:8],
-                "started": meta.get("enqueued_at", "")[:10],
-            })
+                try:
+                    a = eval(args_list[j] or "[]")
+                    user_id = a[0] if a else "?"
+                except Exception:
+                    pass
+                active_crawls.append({
+                    "queue": q,
+                    "user_id": user_id,
+                    "task_id": tid[:8],
+                })
 
-    # ===== 正在下载的图片 =====
+    # ===== 下载活跃 (仅取前 10) =====
     active_downloads = []
     for q in ["dl:ig", "dl:x"]:
-        for tid, expiry in qr.hgetall(f"processing:{q}").items():
-            meta = qr.hgetall(f"task_meta:{q}:{tid}")
-            args_str = meta.get("args", "[]")
-            try:
-                args = eval(args_str)
-                save_path = args[1] if len(args) > 1 else "?"
-            except Exception:
-                save_path = "?"
-            active_downloads.append({
-                "queue": q,
-                "save_path": str(save_path)[-60:],
-                "task_id": tid[:8],
-            })
+        if queues[q]["processing"]:
+            tids = list(qr.hgetall(f"processing:{q}").keys())[:10]
+            active_downloads.extend([{"queue": q, "task_id": tid[:8]} for tid in tids])
 
-    # ===== 已处理统计 (业务 Redis) =====
-    processed = {}
-    for prefix in ["instagram:", "twitter:"]:
-        count = 0
-        total_posts = 0
-        for k in sr.keys(f"{prefix}*:processed"):
-            count += 1
-            total_posts += sr.scard(k)
-        platform = "ig" if "instagram" in prefix else "x"
-        processed[platform] = {"users": count, "total_posts": total_posts}
-
-    db.close()
+    # ===== 已处理 (省去 KEYS 扫描，只报关键数据) =====
+    processed = {
+        "ig": {"note": f"queue dl:ig: {queues.get('dl:ig',{}).get('pending',0)} pending"},
+        "x":  {"note": f"queue dl:x: {queues.get('dl:x',{}).get('pending',0)} pending"},
+    }
 
     return jsonify({
         "task_stats": task_stats,
@@ -149,7 +145,6 @@ HTML = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="10">
 <title>抓取监控面板</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -277,7 +272,7 @@ setInterval(refresh, 5000);
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return HTML
 
 
 if __name__ == "__main__":
