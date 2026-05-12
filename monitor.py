@@ -63,6 +63,17 @@ def api_status():
         FROM {_TABLE} ORDER BY id DESC LIMIT 10
     """)
     recent_tasks = list(cur.fetchall())
+
+    # 今日进度
+    cur.execute(f"""
+        SELECT platform, task_type, status, COUNT(*) as cnt
+        FROM {_TABLE}
+        WHERE DATE(updated_at) = CURDATE()
+        GROUP BY platform, task_type, status
+    """)
+    today_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    for row in cur.fetchall():
+        today_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
     db.close()
 
     # ===== Redis — 用 pipeline 批量查 =====
@@ -123,20 +134,26 @@ def api_status():
             tids = list(qr.hgetall(f"processing:{q}").keys())[:10]
             active_downloads.extend([{"queue": q, "task_id": tid[:8]} for tid in tids])
 
-    # ===== 已处理 (省去 KEYS 扫描，只报关键数据) =====
-    processed = {
-        "ig": {"note": f"queue dl:ig: {queues.get('dl:ig',{}).get('pending',0)} pending"},
-        "x":  {"note": f"queue dl:x: {queues.get('dl:x',{}).get('pending',0)} pending"},
-    }
+    # ===== 当前活跃抓取详情 (取第一个) =====
+    current_crawl = None
+    if active_crawls:
+        c = active_crawls[0]
+        current_crawl = {
+            "user": c["user_id"],
+            "platform": c["queue"].split(":")[1],  # ig or x
+            "type": c["queue"].split(":")[2],       # full or incr
+            "task_id": c["task_id"],
+        }
 
     return jsonify({
         "task_stats": task_stats,
+        "today_stats": today_stats,
+        "current_crawl": current_crawl,
         "recent_tasks": recent_tasks,
         "queues": queues,
         "workers": workers,
-        "active_crawls": active_crawls,
-        "active_downloads": active_downloads,
-        "processed": processed,
+        "active_downloads": len(active_downloads),
+        "dl_pending": sum(q["pending"] for q in queues.values() if q["pending"]),
         "ts": int(time.time()),
     })
 
@@ -145,126 +162,135 @@ HTML = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<title>抓取监控面板</title>
+<title>抓取监控</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0f1923;color:#c0d0e0;font:14px monospace;padding:15px}
-h2{color:#5af;margin:15px 0 8px;border-bottom:1px solid #1a3a4a;padding-bottom:4px}
-.row{display:flex;gap:15px;flex-wrap:wrap}
-.card{background:#1a2a3a;border-radius:6px;padding:12px 16px;flex:1;min-width:120px}
-.card .n{font-size:28px;font-weight:bold}
-.card .l{font-size:11px;color:#7a9ab0;margin-top:3px}
-.n.green{color:#5f5} .n.yellow{color:#ff5} .n.red{color:#f55} .n.blue{color:#5af} .n.white{color:#fff}
-table{width:100%;border-collapse:collapse;margin-top:5px}
-th,td{padding:4px 8px;text-align:left;border-bottom:1px solid #1a3a4a}
-th{color:#7a9ab0;font-weight:normal;font-size:12px}
-td{font-size:13px}
-.tag{padding:1px 6px;border-radius:3px;font-size:11px}
-.tag-pending{background:#553} .tag-queued{background:#355;color:#5af}
-.tag-processing{background:#5af;color:#000} .tag-done{background:#050}
-.tag-failed{background:#500} .tag-skipped{background:#333;color:#888}
+body{background:#0d1a25;color:#bcc8d4;font:12px/1.5 monospace;padding:10px 14px;max-height:100vh;overflow:hidden}
+h1{font-size:16px;color:#5af;margin-bottom:10px}
+h2{font-size:13px;color:#5af;margin:10px 0 4px;border-bottom:1px solid #1a3444;padding-bottom:2px}
+.row{display:flex;gap:10px}
+.card{background:#162636;border-radius:4px;padding:6px 12px;text-align:center;min-width:80px}
+.card .n{font-size:22px;font-weight:bold}
+.card .l{font-size:10px;color:#6a8a9e}
+.n.yellow{color:#fa0} .n.blue{color:#59f} .n.green{color:#5e5} .n.red{color:#e55} .n.white{color:#ddd}
+.col{flex:1;min-width:0}
+table{width:100%;border-collapse:collapse}
+th,td{padding:2px 6px;border-bottom:1px solid #1a3040;text-align:left;font-size:11px}
+th{color:#6a8a9e;font-weight:normal;font-size:10px}
+.tag{padding:0 4px;border-radius:2px;font-size:10px;display:inline-block;min-width:50px;text-align:center}
+.tag-pending{background:#442} .tag-queued{background:#244;color:#59f}
+.tag-processing{background:#59f;color:#000} .tag-done{background:#141}
+.tag-failed{background:#400} .tag-skipped{background:#222;color:#777}
 .alive{color:#5f5} .dead{color:#f55}
-.workers{display:flex;gap:10px;flex-wrap:wrap}
-.worker{border:1px solid #2a4a5a;border-radius:4px;padding:8px 12px}
+#active-now{font-size:14px;color:#fa0;min-height:20px}
 </style>
 </head>
 <body>
-<h1 style="color:#5af">&#x1f4ca; 抓取监控面板</h1>
+<h1>&#x25c9; 抓取监控 <span id="clock" style="color:#6a8a9e;font-size:11px;float:right"></span></h1>
 
-<!-- 任务统计 -->
-<h2>&#x1f4cb; 抓取任务</h2>
-<div class="row" id="task-cards"></div>
+<!-- 顶部总览卡 -->
+<div class="row" id="overview"></div>
 
-<!-- 队列 -->
-<h2>&#x1f4e6; 队列状态</h2>
-<div id="queues"></div>
+<!-- 中排：左-活跃抓取 + 右-队列 -->
+<div class="row" style="margin-top:10px">
+  <div class="col">
+    <h2>&#x25b6; 活跃抓取</h2>
+    <div id="active-now" style="padding:8px;background:#162636;border-radius:4px;min-height:40px"></div>
+    <table id="active-table" style="margin-top:4px"></table>
+  </div>
+  <div class="col">
+    <h2>&#x2630; 队列</h2>
+    <table id="queues"></table>
+  </div>
+</div>
 
-<!-- Worker -->
-<h2>&#x1f3ad; Worker</h2>
-<div class="workers" id="workers"></div>
-<div id="active-crawls" style="margin-top:8px"></div>
-
-<!-- 下载 -->
-<h2>&#x2b07; 下载队列</h2>
-<div id="active-downloads"></div>
-
-<!-- 已处理 -->
-<h2>&#x2705; 已处理总量</h2>
-<div id="processed"></div>
+<!-- Worker + 下载 -->
+<div class="row" style="margin-top:8px">
+  <div class="col">
+    <h2>&#x25cf; Worker</h2>
+    <div id="workers" style="font-size:11px"></div>
+  </div>
+  <div class="col">
+    <h2>&#x21e9; 下载队列: <span id="dl-total" style="color:#fa0">0</span></h2>
+    <div id="dl-summary" style="font-size:11px;color:#6a8a9e"></div>
+  </div>
+</div>
 
 <!-- 最近任务 -->
-<h2>&#x1f4c4; 最近任务</h2>
+<h2>&#x1f4c4; 最近完成</h2>
 <table id="recent"></table>
 
 <script>
 async function refresh(){
-  const r = await fetch('/api/status');
-  const d = await r.json();
-  const S = {pending:'yellow', queued:'blue', processing:'blue', done:'green', failed:'red', skipped:'white'};
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const S = {pending:'yellow', queued:'blue', processing:'blue', done:'green', failed:'red', skipped:'white'};
 
-  // 任务统计卡片
-  let tc = '';
-  for(const [plat, types] of Object.entries(d.task_stats||{})){
-    for(const [tt, statuses] of Object.entries(types)){
-      for(const [st, cnt] of Object.entries(statuses)){
-        tc += `<div class="card"><div class="n ${S[st]||'white'}">${cnt}</div><div class="l">${plat} ${tt} ${st}</div></div>`;
-      }
+    // ===== 顶部总览卡：今日进度 =====
+    let ov = '';
+    for(const plat of ['ig','x']){
+      const pf = d.today_stats?.[plat] || {};
+      const full = pf.full || {};
+      const incr = pf.incr || {};
+      const fpend = full.pending||0, fproc = full.processing||0, fdone = full.done||0;
+      const ipend = incr.pending||0, iproc = incr.processing||0, idone = incr.done||0;
+      const total = fpend+fproc+fdone+ipend+iproc+idone;
+      const done = fdone+idone+(full.skipped||0)+(incr.skipped||0);
+      ov += `<div class="card" style="border-top:3px solid ${plat=='ig'?'#e4405f':'#1da1f2'}">`;
+      ov += `<div class="l">${plat.toUpperCase()} 今日</div>`;
+      ov += `<div class="row" style="gap:6px;justify-content:center;margin-top:3px">`;
+      ov += `<div style="font-size:10px">全量<br><span class="n green">${fdone}</span></div>`;
+      ov += `<div style="font-size:10px">增量<br><span class="n green">${idone}</span></div>`;
+      ov += `<div style="font-size:10px">完成<br><span class="n blue">${done}</span></div>`;
+      ov += `<div style="font-size:10px">总计<br><span class="n ${total>0?'yellow':'white'}">${total}</span></div>`;
+      ov += `</div></div>`;
     }
-  }
-  document.getElementById('task-cards').innerHTML = tc || '<div class="card">暂无数据</div>';
+    document.getElementById('overview').innerHTML = ov;
 
-  // 队列
-  let qh = '<table><tr><th>队列</th><th>待处理</th><th>处理中</th><th>重试</th><th>死信</th></tr>';
-  for(const [q, v] of Object.entries(d.queues||{})){
-    qh += `<tr><td>${q}</td><td>${v.pending}</td><td>${v.processing}</td><td>${v.retry}</td><td>${v.dead}</td></tr>`;
-  }
-  qh += '</table>';
-  document.getElementById('queues').innerHTML = qh;
+    // ===== 活跃抓取 =====
+    let now = '';
+    let at = '';
+    if(d.current_crawl){
+      const c = d.current_crawl;
+      now = `<b>${c.platform.toUpperCase()} ${c.type}</b> 正在抓取 <b style="color:#fa0">@${c.user}</b>`;
+      if(c.scroll) now += ` | 滚动${c.scroll}次 | ${c.images||0}张图`;
+    } else {
+      now = '<span style="color:#6a8a9e">等待任务...</span>';
+    }
+    document.getElementById('active-now').innerHTML = now;
 
-  // Worker
-  let wh = '';
-  for(const [w, s] of Object.entries(d.workers||{})){
-    wh += `<div class="worker"><span class="${s.alive?'alive':'dead'}">&#x25cf;</span> ${w} <span style="color:#7a9ab0">${s.last_seen_sec}s ago</span></div>`;
-  }
-  document.getElementById('workers').innerHTML = wh || '无活跃 Worker';
+    // ===== 队列表 =====
+    let qh = '<tr><th>队列</th><th>待处理</th><th>处理中</th><th>重试</th><th>死信</th></tr>';
+    for(const [q, v] of Object.entries(d.queues||{})){
+      const p = v.pending>0?'color:#fa0':'', r = v.retry>0?'color:#e55':'', d2 = v.dead>0?'color:#e55':'';
+      qh += `<tr><td>${q}</td><td style="${p}">${v.pending}</td><td>${v.processing}</td><td style="${r}">${v.retry}</td><td style="${d2}">${v.dead}</td></tr>`;
+    }
+    document.getElementById('queues').innerHTML = qh;
 
-  // 活跃抓取
-  let ac = '';
-  if(d.active_crawls?.length){
-    ac = '<table><tr><th>队列</th><th>用户</th><th>任务ID</th></tr>';
-    for(const c of d.active_crawls) ac += `<tr><td>${c.queue}</td><td>${c.user_id}</td><td>${c.task_id}</td></tr>`;
-    ac += '</table>';
-  }
-  document.getElementById('active-crawls').innerHTML = ac;
+    // Worker
+    let wh = '';
+    for(const [w, s] of Object.entries(d.workers||{}))
+      wh += `<span class="${s.alive?'alive':'dead'}">&#x25cf;</span> ${w} <span style="color:#6a8a9e">${s.last_seen_sec}s</span> &nbsp;`;
+    document.getElementById('workers').innerHTML = wh || '无';
 
-  // 下载
-  let ad = '';
-  if(d.active_downloads?.length){
-    ad = '<table><tr><th>队列</th><th>路径</th><th>任务ID</th></tr>';
-    for(const dl of d.active_downloads) ad += `<tr><td>${dl.queue}</td><td>${dl.save_path}</td><td>${dl.task_id}</td></tr>`;
-    ad += '</table>';
-  }
-  document.getElementById('active-downloads').innerHTML = ad;
+    // 下载
+    const dli = d.queues['dl:ig']?.pending||0;
+    const dlx = d.queues['dl:x']?.pending||0;
+    document.getElementById('dl-total').innerText = (d.dl_pending||dli+dlx);
+    document.getElementById('dl-summary').innerHTML = `IG: ${dli} 待下载 | X: ${dlx} 待下载 | 处理中: ${d.active_downloads||0}`;
 
-  // 已处理
-  let ph = '';
-  for(const [p, v] of Object.entries(d.processed||{})){
-    ph += `<div class="card"><div class="n blue">${v.users}</div><div class="l">${p} 用户</div></div>`;
-    ph += `<div class="card"><div class="n blue">${v.total_posts}</div><div class="l">${p} 已处理帖</div></div>`;
-  }
-  document.getElementById('processed').innerHTML = ph || '暂无';
+    // 最近
+    let rh = '<tr><th>时间</th><th>平台</th><th>类型</th><th>用户</th><th>状态</th></tr>';
+    for(const t of d.recent_tasks||[])
+      rh += `<tr><td>${t.upd}</td><td>${t.platform}</td><td>${t.task_type}</td><td>@${t.user_id}</td><td><span class="tag tag-${t.status}">${t.status}</span></td></tr>`;
+    document.getElementById('recent').innerHTML = rh;
 
-  // 最近任务
-  let rh = '<tr><th>ID</th><th>平台</th><th>类型</th><th>用户</th><th>状态</th><th>时间</th></tr>';
-  for(const t of d.recent_tasks||[]){
-    rh += `<tr><td>${t.id}</td><td>${t.platform}</td><td>${t.task_type}</td><td>${t.user_id}</td><td><span class="tag tag-${t.status}">${t.status}</span></td><td>${t.upd}</td></tr>`;
-  }
-  document.getElementById('recent').innerHTML = rh;
-
-  document.title = `监控 ${new Date().toTimeString().slice(0,8)}`;
+    document.getElementById('clock').innerText = new Date().toLocaleTimeString();
+  }catch(e){}
 }
 refresh();
-setInterval(refresh, 5000);
+setInterval(refresh, 4000);
 </script>
 </body>
 </html>"""
