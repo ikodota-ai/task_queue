@@ -7,12 +7,12 @@ source venv/bin/activate
 
 SERVICES=(
     "producer:python producer.py"
-    "ig-crawler-full:python ig_crawler.py --mode full"
-    "ig-crawler-incr:python ig_crawler.py --mode incr"
-    "x-crawler-full:python x_crawler.py --mode full"
-    "x-crawler-incr:python x_crawler.py --mode incr"
-    "sub-worker-1:python sub_task_worker.py"
-    "sub-worker-2:python sub_task_worker.py"
+    # "ig-crawler-full:python ig_crawler.py --mode full"
+    # "ig-crawler-incr:python ig_crawler.py --mode incr"
+    # "x-crawler-full:python x_crawler.py --mode full"
+    # "x-crawler-incr:python x_crawler.py --mode incr"
+    # "sub-worker-ig:python sub_task_worker.py --mode ig"
+    # "sub-worker-x:python sub_task_worker.py --mode x"
     "monitor:python monitor.py"
 )
 

@@ -139,12 +139,27 @@ def _get_db() -> pymysql.Connection:
 # -----------------------------------------------------------
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("ig", "x", "all"), default="all",
+                        help="ig=仅 IG, x=仅 X, all=两者 (默认)")
+    opt_args = parser.parse_args()
+
+    if opt_args.mode == "ig":
+        queue_names = ["dl:ig"]
+        worker_id = "sub-worker-ig"
+    elif opt_args.mode == "x":
+        queue_names = ["dl:x"]
+        worker_id = "sub-worker-x"
+    else:
+        queue_names = ["dl:ig", "dl:x"]
+        worker_id = "sub-worker"
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # 连接队列 Redis（SSH 隧道需提前在 bash 中建好）
     tq = TaskQueue()
     tq.redis = tq.redis.from_url(
         f"redis://:{cfg['queue_redis_password']}@{cfg['queue_redis_host']}:{cfg['queue_redis_port']}/{cfg['queue_redis_db']}"
@@ -153,8 +168,7 @@ def main():
         decode_responses=True,
     )
 
-    # 启动 Worker，监听平台下载队列
-    worker = Worker(tq, ["dl:ig", "dl:x"], worker_id="sub-worker")
+    worker = Worker(tq, queue_names, worker_id=worker_id)
 
     def shutdown(sig, frame):
         logger.info("Shutting down sub-task worker...")
@@ -163,7 +177,7 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    logger.info("Sub-task worker starting (queues: dl:ig, dl:x)")
+    logger.info(f"Sub-task worker starting (queues: {', '.join(queue_names)})")
     worker.start()
 
 
