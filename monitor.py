@@ -148,6 +148,15 @@ def api_status():
 
     db.close()
 
+    # ===== task_meta 概况 (一次 keys 分类) =====
+    tm_total = 0
+    tm_by_q = {"dl:ig": 0, "dl:x": 0, "crawl": 0}
+    for k in qr.keys("task_meta:*"):
+        tm_total += 1
+        if ":dl:ig:" in k: tm_by_q["dl:ig"] += 1
+        elif ":dl:x:" in k: tm_by_q["dl:x"] += 1
+        elif ":crawl:" in k: tm_by_q["crawl"] += 1
+
     # ===== Redis — 用 pipeline 批量查 =====
     pipe = qr.pipeline()
     for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr",
@@ -245,6 +254,7 @@ def api_status():
         "workers": workers,
         "active_downloads": active_downloads,
         "dl_pending": sum(q["pending"] for q in queues.values() if q["pending"]),
+        "task_meta": {"total": tm_total, "by_type": tm_by_q},
         "ts": int(time.time()),
     })
 
@@ -256,34 +266,37 @@ HTML = """<!DOCTYPE html>
 <title>抓取监控</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0d1a25;color:#bcc8d4;font:12px/1.5 monospace;padding:10px 14px;max-height:100vh;overflow:hidden}
-h1{font-size:16px;color:#5af;margin-bottom:10px}
-h2{font-size:13px;color:#5af;margin:10px 0 4px;border-bottom:1px solid #1a3444;padding-bottom:2px}
+body{background:#0d1a25;color:#bcc8d4;font:12px/1.5 monospace;font-size:1.5rem;padding:10px 14px;max-height:100vh;overflow:hidden}
+h1{font-size:16px;font-size:1.5rem;color:#5af;margin-bottom:10px}
+h2{font-size:13px;font-size:1.5rem;color:#5af;margin:10px 0 4px;border-bottom:1px solid #1a3444;padding-bottom:2px}
 .row{display:flex;gap:10px}
 .card{background:#162636;border-radius:4px;padding:6px 12px;text-align:center;min-width:80px}
-.card .n{font-size:22px;font-weight:bold}
-.card .l{font-size:10px;color:#6a8a9e}
+.card .n{font-size:22px;font-size:1.5rem;font-weight:bold}
+.card .l{font-size:10px;font-size:1.5rem;color:#6a8a9e}
 .n.yellow{color:#fa0} .n.blue{color:#59f} .n.green{color:#5e5} .n.red{color:#e55} .n.white{color:#ddd}
 .col{flex:1;min-width:0}
 table{width:100%;border-collapse:collapse}
-th,td{padding:2px 6px;border-bottom:1px solid #1a3040;text-align:left;font-size:11px}
-th{color:#6a8a9e;font-weight:normal;font-size:10px}
-.tag{padding:0 4px;border-radius:2px;font-size:10px;display:inline-block;min-width:50px;text-align:center}
+th,td{padding:2px 6px;border-bottom:1px solid #1a3040;text-align:left;font-size:11px;font-size:1.5rem;}
+th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
+.tag{padding:0 4px;border-radius:2px;font-size:10px;font-size:1.5rem;display:inline-block;min-width:50px;text-align:center}
 .tag-pending{background:#442} .tag-queued{background:#244;color:#59f}
 .tag-processing{background:#59f;color:#000} .tag-done{background:#141}
 .tag-failed{background:#400} .tag-skipped{background:#222;color:#777}
 .alive{color:#5f5} .dead{color:#f55}
-#active-now{font-size:14px;color:#fa0;min-height:20px}
+#active-now{font-size:14px;font-size:1.5rem;color:#fa0;min-height:20px}
 </style>
 </head>
 <body>
-<h1>&#x25c9; 抓取监控 <span id="clock" style="color:#6a8a9e;font-size:11px;float:right"></span></h1>
+<h1>&#x25c9; 抓取监控 <span id="clock" style="color:#6a8a9e;font-size:11px;float:right;font-size:1.5rem;"></span></h1>
 
-<!-- 今日工作量 + 进度总览 -->
-<div class="row" id="overview" style="margin-bottom:8px"></div>
+
 
 <!-- 中排：左-活跃抓取 + 右-队列 -->
 <div class="row" style="margin-top:10px">
+<!-- 今日工作量 + 进度总览 -->
+  <div class="col">
+    <div class="row" id="overview" style="margin-bottom:8px"></div>
+  </div>
   <div class="col">
     <h2>&#x25b6; 活跃抓取</h2>
     <div id="active-now" style="padding:8px;background:#162636;border-radius:4px;min-height:40px"></div>
@@ -299,11 +312,12 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px}
 <div class="row" style="margin-top:8px">
   <div class="col">
     <h2>&#x25cf; Worker</h2>
-    <div id="workers" style="font-size:11px"></div>
+    <div id="workers" style="font-size:11px;font-size:1.5rem;"></div>
+    <div id="tm-info" style="font-size:10px;color:#6a8a9e;margin-top:4px"></div>
   </div>
   <div class="col">
     <h2>&#x21e9; 下载队列: <span id="dl-total" style="color:#fa0">0</span></h2>
-    <div id="dl-summary" style="font-size:11px;color:#6a8a9e"></div>
+    <div id="dl-summary" style="font-size:11px;font-size:1.5rem;color:#6a8a9e"></div>
   </div>
 </div>
 
@@ -312,15 +326,15 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px}
   <div style="flex:2">
     <h2>&#x2795; 手动入队</h2>
     <form id="enq-form" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap" onsubmit="return enqueue()">
-      <select id="enq-plat" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px">
+      <select id="enq-plat" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;">
         <option value="ig">IG</option><option value="x">X</option>
       </select>
-      <select id="enq-type" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px">
+      <select id="enq-type" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;">
         <option value="full">全量</option><option value="incr">增量</option>
       </select>
-      <input id="enq-user" placeholder="user_id" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;width:140px">
-      <button type="submit" style="background:#5af;color:#000;border:none;padding:4px 12px;border-radius:3px;font-size:11px;cursor:pointer;font-weight:bold">入队</button>
-      <span id="enq-msg" style="font-size:11px;color:#5f5;margin-left:6px"></span>
+      <input id="enq-user" placeholder="user_id" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;;width:140px">
+      <button type="submit" style="background:#5af;color:#000;border:none;padding:4px 12px;border-radius:3px;font-size:11px;font-size:1.5rem;;cursor:pointer;font-weight:bold">入队</button>
+      <span id="enq-msg" style="font-size:11px;font-size:1.5rem;;color:#5f5;margin-left:6px"></span>
     </form>
   </div>
 </div>
@@ -378,6 +392,11 @@ async function refresh(){
     for(const [w, s] of Object.entries(d.workers||{}))
       wh += `<span class="${s.alive?'alive':'dead'}">&#x25cf;</span> ${w} <span style="color:#6a8a9e">${s.last_seen_sec}s</span> &nbsp;`;
     document.getElementById('workers').innerHTML = wh || '无';
+    // task_meta 概况
+    const tm = d.task_meta;
+    document.getElementById('tm-info').innerHTML = tm
+      ? `Redis: ${tm.total} 条任务记录 | IG下载 ${tm.by_type['dl:ig']||0} | X下载 ${tm.by_type['dl:x']||0} | 抓取 ${tm.by_type['crawl']||0}`
+      : '';
 
     // 下载
     const dli = d.queues['dl:ig']?.pending||0;
