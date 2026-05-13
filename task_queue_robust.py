@@ -35,8 +35,8 @@ WORKER_HEARTBEAT_INTERVAL = 30
 # Worker 心跳超时（秒），超过此时间未收到心跳，认为Worker死亡
 WORKER_HEARTBEAT_TIMEOUT = 90
 
-# Chrome Driver 每个Worker最大任务处理数（超过后自动退出，让守护进程重启）
-MAX_TASKS_PER_WORKER = 100
+# 每个Worker最大任务处理数（超过后自动退出，让守护进程重启；0=不限制）
+MAX_TASKS_PER_WORKER = int(os.getenv("MAX_TASKS_PER_WORKER", 100))
 
 # 日志配置
 logging.basicConfig(
