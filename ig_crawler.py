@@ -688,24 +688,23 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
             if _is_carousel(links[link_idx]):
                 image_urls = _extract_carousel_images(driver, links[link_idx])
-                # dom_changed = True  # 弹框操作导致 DOM 变化，后续 link 引用失效
+                dom_changed = True  # 弹框操作导致 DOM 变化，后续 link 引用失效
             else:
                 thumb = _extract_grid_thumbnail(links[link_idx])
                 if thumb:
                     image_urls = [thumb]
 
-            # if not image_urls:
-            #     _mark_processed(user_id, post_id)
-            #     if dom_changed:
-            #         # 弹框已关闭，DOM 恢复；重新拉取链接，继续处理同页其他帖子
-            #         links = driver.find_elements(
-            #             By.XPATH,
-            #             "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
-            #         )
-            #         link_idx = 0
-            #     else:
-            #         link_idx += 1
-            #     continue
+            if not image_urls:
+                _mark_processed(user_id, post_id)
+                if dom_changed:
+                    links = driver.find_elements(
+                        By.XPATH,
+                        "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
+                    )
+                    link_idx = 0
+                else:
+                    link_idx += 1
+                continue
 
             # ---- 写入 DB + 发下载子任务 ----
             for idx, img_url in enumerate(image_urls, 1):
@@ -746,15 +745,14 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
             # 短延迟避免检测
             time.sleep(0.5)
 
-            # if dom_changed:
-            #     # 弹框已关闭，DOM 恢复；重新拉取链接，继续处理同页其他帖子
-            #     links = driver.find_elements(
-            #         By.XPATH,
-            #         "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
-            #     )
-            #     link_idx = 0
-            # else:
-            #     link_idx += 1
+            if dom_changed:
+                links = driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
+                )
+                link_idx = 0
+            else:
+                link_idx += 1
 
         if new_found:
             logger.info(
