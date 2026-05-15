@@ -182,9 +182,11 @@ def api_status():
     workers = {}
     for k in qr.keys("worker:heartbeat:*"):
         wid = k.split(":", 2)[2]
-        ts = float(qr.get(k) or 0)
+        raw = qr.get(k) or "|0"
+        host = raw.split("|")[0] if "|" in raw else "?"
+        ts = float(raw.split("|")[-1] or 0)
         age = int(time.time() - ts)
-        workers[wid] = {"alive": age < 90, "last_seen_sec": age}
+        workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host}
 
     # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
     active_crawls = []
@@ -390,7 +392,7 @@ async function refresh(){
     // Worker
     let wh = '';
     for(const [w, s] of Object.entries(d.workers||{}))
-      wh += `<span class="${s.alive?'alive':'dead'}">&#x25cf;</span> ${w} <span style="color:#6a8a9e">${s.last_seen_sec}s</span> &nbsp;`;
+      wh += `<span class="${s.alive?'alive':'dead'}">&#x25cf;</span> ${w} <span style="color:#5af">@${s.host||'?'}</span> <span style="color:#6a8a9e">${s.last_seen_sec}s</span> &nbsp;`;
     document.getElementById('workers').innerHTML = wh || '无';
     // task_meta 概况
     const tm = d.task_meta;

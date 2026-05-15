@@ -282,8 +282,11 @@ class TaskQueue:
         return [k.split(":", 1)[1] for k in keys]
 
     def worker_heartbeat(self, worker_id: str):
-        """Worker 心跳，用于健康检查"""
-        self.redis.setex(f"worker:heartbeat:{worker_id}", WORKER_HEARTBEAT_TIMEOUT, time.time())
+        """Worker 心跳，用于健康检查（含机器名）"""
+        import socket
+        host = socket.gethostname().split(".")[0]
+        self.redis.setex(f"worker:heartbeat:{worker_id}", WORKER_HEARTBEAT_TIMEOUT,
+                         f"{host}|{time.time()}")
 
     def get_active_workers(self) -> List[str]:
         """返回活跃 Worker ID 列表"""
