@@ -92,7 +92,7 @@ def _lookup_star_id(user_id: str) -> Optional[int]:
     try:
         cur = db.cursor()
         cur.execute(
-            "SELECT id FROM la_star_info WHERE instagram = %s",
+            "SELECT id FROM la_star_info WHERE x = %s",
             (user_id,),
         )
         row = cur.fetchone()
