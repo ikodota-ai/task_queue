@@ -95,7 +95,7 @@ def test_download_http_error_no_db_update(mock_requests):
 @patch("sub_task_worker.requests.get")
 @patch("builtins.open", new_callable=mock_open)
 def test_platform_ig_path(mock_file, mock_requests):
-    """IG 平台图片应存到 ig/ 子目录"""
+    """IG 平台图片路径自带 ig/ 前缀"""
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.iter_content.return_value = [b"x"]
@@ -103,7 +103,7 @@ def test_platform_ig_path(mock_file, mock_requests):
 
     result = sub_download_image(
         "https://scontent.cdninstagram.com/img.jpg",
-        "image/999/abc.jpg",
+        "ig/image/999/abc.jpg",
         platform="ig",
     )
     assert os.path.join("ig", "image", "999", "abc.jpg").replace("\\", "/") in result.replace("\\", "/")
@@ -112,7 +112,7 @@ def test_platform_ig_path(mock_file, mock_requests):
 @patch("sub_task_worker.requests.get")
 @patch("builtins.open", new_callable=mock_open)
 def test_platform_x_path(mock_file, mock_requests):
-    """X 平台图片应存到 x/ 子目录"""
+    """X 平台图片路径自带 x/ 前缀"""
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.iter_content.return_value = [b"x"]
@@ -120,7 +120,7 @@ def test_platform_x_path(mock_file, mock_requests):
 
     result = sub_download_image(
         "https://pbs.twimg.com/media/img.jpg",
-        "image/999/abc.jpg",
+        "x/image/999/abc.jpg",
         platform="x",
     )
     assert os.path.join("x", "image", "999", "abc.jpg").replace("\\", "/") in result.replace("\\", "/")
@@ -129,7 +129,7 @@ def test_platform_x_path(mock_file, mock_requests):
 @patch("sub_task_worker.requests.get")
 @patch("builtins.open", new_callable=mock_open)
 def test_no_platform_no_subdir(mock_file, mock_requests):
-    """无 platform 参数时不分子目录"""
+    """旧任务无平台前缀直存"""
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.iter_content.return_value = [b"x"]

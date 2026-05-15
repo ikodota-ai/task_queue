@@ -521,14 +521,14 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                             star_id, f"image/{star_id}/{check_code}{ext}",
                             batch, check_code, "x"
                         )
-                        save_path = f"image/{star_id}/{check_code}{ext}"
+                        save_path = f"x/image/{star_id}/{check_code}{ext}"
                     except Exception as e:
                         logger.error(f"DB insert failed: {e}")
                         db_id = None
-                        save_path = f"{user_id}/{filename}"
+                        save_path = f"x/{user_id}/{filename}"
                 else:
                     db_id = None
-                    save_path = f"{user_id}/{filename}"
+                    save_path = f"x/{user_id}/{filename}"
                 if db_id == 0:
                     continue
                 tq.enqueue(

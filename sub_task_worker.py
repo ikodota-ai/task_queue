@@ -40,14 +40,8 @@ def sub_download_image(url: str, save_path: str, db_id: int = None, platform: st
 
     Returns: 最终文件路径
     """
-    # 按平台分目录
-    if platform and not os.path.isabs(save_path):
-        base = os.path.join(_CHROOT, platform)
-    else:
-        base = _CHROOT
-
     if not os.path.isabs(save_path):
-        save_path = os.path.join(base, save_path)
+        save_path = os.path.join(_CHROOT, save_path)
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
