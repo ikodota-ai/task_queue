@@ -147,9 +147,15 @@ def _is_full_crawl_done(user_id: str) -> bool:
             (user_id,),
         )
         row = cur.fetchone()
-        return row is not None and row[0] == "done"
+        if row and row[0] == "done":
+            return True
     finally:
         db.close()
+
+    if _state_redis().scard(_pkey(user_id)) > 0:
+        return True
+
+    return False
 
 
 # -----------------------------------------------------------

@@ -119,6 +119,7 @@ def _update_crawl_status(db_task_id: int, status: str, images_count: int = None)
         db.close()
 
 def _is_full_crawl_done(user_id: str) -> bool:
+    # 先看 MySQL 是否有 done 记录
     db = _get_db()
     try:
         cur = db.cursor()
@@ -129,9 +130,16 @@ def _is_full_crawl_done(user_id: str) -> bool:
             (user_id,),
         )
         row = cur.fetchone()
-        return row is not None and row[0] == "done"
+        if row and row[0] == "done":
+            return True
     finally:
         db.close()
+
+    # 兜底：旧爬虫做完全量，processed 集合非空即视为已完成
+    if _state_redis().scard(_pkey(user_id)) > 0:
+        return True
+
+    return False
 
 def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str) -> int:
     """插入 la_star_instagram，返回自增 ID"""
