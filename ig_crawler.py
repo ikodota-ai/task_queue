@@ -463,30 +463,45 @@ def _extract_from_dialog(driver) -> List[str]:
             seen.add(img_url)
             images.append(img_url)
     logger.info(f"Carousel opened, initial images: {len(images)}")
-    # time.sleep(2)
+    time.sleep(2)
     while True:
-        try:
-            # next_button = driver.find_elements(By.XPATH, "//button[@aria-label='下一步']")
-            next_button = driver.find_elements(By.XPATH, "//button[contains(@class, '_afxw')]")
-            next_button[1].click()
-            time.sleep(1)
-            try:
-                new_images = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
-                for img in new_images:
-                        img_url = img.get_attribute("src")
-                        if img_url and "s150x150" not in img_url and "profile" not in img_url and img_url not in seen:
-                            seen.add(img_url)
-                            images.append(img_url)
-                            
-
-            except:
+        # 依次尝试多种语言/地区的 Next 按钮
+        next_btn = None
+        for selector in [
+            '//button[contains(@class, "_afxw")]',
+            '//button[@aria-label="下一步"]',
+            '//button[@aria-label="Next"]',
+        ]:
+            btns = driver.find_elements(By.XPATH, selector)
+            if "_afxw" in selector:
+                btns = [b for b in btns if b.is_displayed()]
+                if len(btns) >= 2:
+                    next_btn = btns[1]  # 第二个 _afxw 通常是 Next
+            elif btns:
+                next_btn = btns[0]
+            if next_btn:
                 break
-            
-        except Exception:
-            # print(Exception)
+
+        if not next_btn:
             logger.info(f"Next button gone, pagination done ({len(images)} images)")
             break
-        
+
+        try:
+            next_btn.click()
+        except Exception:
+            logger.info(f"Next button stale, pagination done ({len(images)} images)")
+            break
+
+        time.sleep(1)
+        try:
+            new_images = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
+            for img in new_images:
+                    img_url = img.get_attribute("src")
+                    if img_url and "s150x150" not in img_url and "profile" not in img_url and img_url not in seen:
+                        seen.add(img_url)
+                        images.append(img_url)
+        except:
+            break
 
     return images
 
