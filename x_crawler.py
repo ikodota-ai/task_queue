@@ -231,7 +231,7 @@ def _setup_chrome(headless=False):
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--window-size=1920,1080")
-    if headless or os.getenv("CHROME_HEADLESS"):
+    if headless or os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
         opt.add_argument("--headless=new")
         opt.add_argument("--disable-gpu")
     opt.add_argument(f"--user-data-dir=/tmp/chrome_x_{int(time.time())}")
