@@ -731,7 +731,7 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                 batch = f"/{user_id}/p/{post_id}/"
                 if star_id:
                     try:
-                        db_id = _insert_star_instagram(star_id, f"image/{star_id}/{check_code}{ext}", batch, check_code)
+                        db_id = _insert_star_instagram(star_id, f"ig/image/{star_id}/{check_code}{ext}", batch, check_code)
                         save_path = f"ig/image/{star_id}/{check_code}{ext}"
                     except Exception as e:
                         logger.error(f"DB insert failed: {e}")

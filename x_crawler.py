@@ -524,7 +524,7 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                 if star_id:
                     try:
                         db_id = _insert_star_instagram(
-                            star_id, f"image/{star_id}/{check_code}{ext}",
+                            star_id, f"x/image/{star_id}/{check_code}{ext}",
                             batch, check_code, "x"
                         )
                         save_path = f"x/image/{star_id}/{check_code}{ext}"
