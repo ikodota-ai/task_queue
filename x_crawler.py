@@ -378,15 +378,13 @@ def _extract_grid_thumbnail(link) -> Optional[str]:
 
 
 def _extract_images_from_tweet(driver, link) -> List[str]:
-    """点击列表页推文 → 弹窗打开 → 翻页取图 → 关闭弹窗回到列表"""
+    """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗"""
     try:
         link.click()
-    except Exception:
+    except:
         return []
     time.sleep(2)
-
-    images = []
-    seen = set()
+    images, seen = [], set()
 
     def _grab():
         for xp in (
@@ -394,8 +392,7 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             "//article//img[contains(@src, 'pbs.twimg.com')]",
         ):
             for img in driver.find_elements(By.XPATH, xp):
-                src = img.get_attribute("src")
-                fixed = _fix_image_url(src)
+                fixed = _fix_image_url(img.get_attribute("src"))
                 if fixed and fixed not in seen:
                     seen.add(fixed)
                     images.append(fixed)
@@ -403,15 +400,12 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
     _grab()
     logger.info(f"  Tweet modal opened, initial: {len(images)} images")
 
-    # 翻页（仅多图有 Next slide）
     no_new_streak = 0
     for _ in range(50):
         before = len(images)
         next_btn = None
         for aria in ("Next slide", "下一页", "下一步"):
-            btns = driver.find_elements(
-                By.XPATH, f"//button[@aria-label='{aria}']"
-            )
+            btns = driver.find_elements(By.XPATH, f"//button[@aria-label='{aria}']")
             if btns:
                 next_btn = btns[0]
                 break
@@ -419,7 +413,7 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             break
         try:
             next_btn.click()
-        except Exception:
+        except:
             break
         time.sleep(0.8)
         _grab()
@@ -430,7 +424,7 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             if no_new_streak >= 3:
                 break
 
-    # 关闭弹窗（依次尝试多种 close 按钮）
+    # 关闭弹窗（依次尝试多种 close）
     for xp in (
         "//div[@aria-roledescription='carousel']//button[@aria-label='close']",
         "//button[@aria-label='close']",
@@ -439,15 +433,14 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
         try:
             driver.find_element(By.XPATH, xp).click()
             break
-        except Exception:
+        except:
             continue
     else:
         try:
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-        except Exception:
+        except:
             pass
     time.sleep(1)
-
     return images
 
 
