@@ -382,34 +382,18 @@ def _extract_grid_thumbnail(link) -> Optional[str]:
 # -----------------------------------------------------------
 
 def _extract_carousel_images(driver, link) -> List[str]:
-    """
-    点击多图帖子，在弹框中翻页提取所有图片 URL。
-    返回图片 URL 列表（可能含 CDN 缩略图和全尺寸图）。
-    """
-    grid_url = driver.current_url
-
-    # 点击帖子
+    """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗"""
     try:
         link.click()
     except Exception:
         return []
-    time.sleep(0.1)
+    time.sleep(2)
+    # 提取 + 翻页 + 关闭交给 _extract_images_from_tweet
+    return _extract_images_from_tweet(driver)
 
-    # 情形 A：弹框模式（URL 不变，dialog 出现）
-    # if driver.current_url == grid_url:
-    images = _extract_images_from_tweet(driver)
-    _close_dialog(driver)
-    return images
 
-    # 情形 B：导航到了帖子页（旧版 Instagram）
-    # logger.info("Navigated to post page, extracting there")
-    # images = _extract_images_from_post_page(driver)
-    # driver.back()
-    # time.sleep(2)
-    # return images
-
-def _extract_images_from_tweet(driver, link) -> List[str]:
-    """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗"""
+def _extract_images_from_tweet(driver) -> List[str]:
+    """在已打开的弹窗中翻页取图，最后关闭弹窗"""
     try:
         WebDriverWait(driver, 3).until(
             EC.presence_of_element_located((By.XPATH, "//div[@aria-roledescription='carousel']"))
@@ -457,7 +441,24 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             if no_new_streak >= 3:
                 break
 
-    
+    # 关闭弹窗
+    for xp in (
+        "//div[@aria-roledescription='carousel']//button[@aria-label='close']",
+        "//button[@aria-label='close']",
+        "//div[@role='dialog']//button[@aria-label='Close']",
+    ):
+        try:
+            driver.find_element(By.XPATH, xp).click()
+            break
+        except:
+            continue
+    else:
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except:
+            pass
+    time.sleep(1)
+
     return images
 
 
