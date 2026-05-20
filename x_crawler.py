@@ -378,7 +378,7 @@ def _extract_grid_thumbnail(link) -> Optional[str]:
 
 
 def _extract_images_from_tweet(driver, link) -> List[str]:
-    """点击列表页推文 → 导航到详情页 → 提取所有图片 URL（含翻页）"""
+    """点击列表页推文 → 弹窗打开 → 翻页取图 → 关闭弹窗回到列表"""
     try:
         link.click()
     except Exception:
@@ -391,7 +391,7 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
     def _grab():
         for img in driver.find_elements(
             By.XPATH,
-            "//div[@data-testid='tweetPhoto']//img"
+            "//div[@aria-roledescription='carousel']//img"
         ):
             src = img.get_attribute("src")
             fixed = _fix_image_url(src)
@@ -400,22 +400,50 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
                 images.append(fixed)
 
     _grab()
+    logger.info(f"  Carousel opened, initial: {len(images)} images")
 
-    # 多图翻页
+    # 翻页：依次尝试多语言 Next 按钮，直到找不到或连续 3 次无新图
+    no_new_streak = 0
     for _ in range(50):
-        # before = len(images)
+        before = len(images)
+        next_btn = None
+        for aria in ("Next slide", "下一页", "下一步"):
+            btns = driver.find_elements(
+                By.XPATH,
+                f"//div[@aria-roledescription='carousel']//button[@aria-label='{aria}']"
+            )
+            if btns:
+                next_btn = btns[0]
+                break
+        if not next_btn:
+            break
         try:
-            next_btn = driver.find_element(By.XPATH, "//div(@aria-roledescription='carousel')//button[@aria-label='Next slide']")
             next_btn.click()
-            time.sleep(0.8)
-            _grab()
         except Exception:
-            break #可能是没有对象执行click事件失败
-        # if len(images) == before:
-        #     break
+            break
+        time.sleep(0.8)
+        _grab()
+        if len(images) > before:
+            no_new_streak = 0
+        else:
+            no_new_streak += 1
+            if no_new_streak >= 3:
+                break
 
-    driver.back()
-    time.sleep(1.5)
+    # 关闭弹窗回到列表页
+    try:
+        close_btn = driver.find_element(
+            By.XPATH,
+            "//div[@aria-roledescription='carousel']//button[@aria-label='close']"
+        )
+        close_btn.click()
+    except Exception:
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except Exception:
+            pass
+    time.sleep(1)
+
     return images
 
 
@@ -470,9 +498,9 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
     for scroll_idx in range(500):
         links = driver.find_elements(
             By.XPATH,
-            "//a[contains(@href, '/photo/')]",
+            "//section[@role='region']//li[@role='listitem']//a",
         )
-        logger.info(f"Scroll {scroll_idx+1}: {len(links)} photo links on page")
+        logger.info(f"Scroll {scroll_idx+1}: {len(links)} tweet links on page")
 
         new_found = 0
 
@@ -513,7 +541,7 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
-                break  # 推文页跳转后 link 引用失效，跳出重新获取
+                continue
 
             # ---- 写入 DB + 发下载子任务 ----
             for idx, img_url in enumerate(image_urls, 1):
@@ -553,7 +581,7 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                     since_cursor_save = 0
 
             time.sleep(0.5)
-            break  # link 引用已失效，下轮 scroll 重新获取
+            # 弹窗模式 link 不失效，继续同页其他推文
 
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")
