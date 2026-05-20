@@ -8,6 +8,7 @@ X Crawler 真实环境测试 — 使用 db15(队列) + db14(业务)，不写 MyS
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 import time
