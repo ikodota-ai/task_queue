@@ -20,8 +20,6 @@ from task_queue_robust import register_task, TaskQueue, Worker
 
 logger = logging.getLogger("SubTaskWorker")
 
-_CHROOT = os.getenv("SUB_DOWNLOAD_DIR", "/data/images")
-
 
 # -----------------------------------------------------------
 # 注册子任务函数
@@ -40,27 +38,15 @@ def sub_download_image(url: str, save_path: str, db_id: int = None, platform: st
 
     Returns: 最终文件路径
     """
-    if not os.path.isabs(save_path):
-        save_path = os.path.join(_CHROOT, save_path)
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
     # 随机延迟 0.5~2s，避免高频请求
     time.sleep(random.uniform(0.5, 2))
 
-    headers = {
-        "Referer": "https://www.instagram.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-    }
-    resp = requests.get(url, stream=True, timeout=60, headers=headers)
-    resp.raise_for_status()
+    # 使用统一存储后端（本地/阿里云/七牛/腾讯云）
+    from storage import upload_from_url, get_url
+    file_url = upload_from_url(url, save_path)
+    save_path = file_url  # 返回的是可访问 URL，后续 DB 更新用这个
 
-    with open(save_path, "wb") as f:
-        for chunk in resp.iter_content(1024 * 64):
-            f.write(chunk)
-
-    logger.info(f"Downloaded {url} -> {save_path}")
+    logger.info(f"Uploaded {url} -> {save_path}")
 
     # 更新 DB 状态（ig/x 共表 la_star_instagram，source 字段区分）
     if db_id:
