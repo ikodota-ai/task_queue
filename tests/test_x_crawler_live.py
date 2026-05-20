@@ -237,11 +237,8 @@ def crawl_user(user_id: str, max_scrolls=20):
                 if _is_processed(user_id, tweet_id):
                     continue
 
-                images = (
-                    _extract_images_from_tweet(driver, link)
-                    if _has_gallery_icon(link)
-                    else [u for u in [_extract_grid_thumbnail(link)] if u]
-                )
+                # 点开弹窗取图（不区分单图/多图，跟 IG 一样）
+                images = _extract_images_from_tweet(driver, link)
 
                 for idx, url in enumerate(images, 1):
                     fn = f"{tweet_id}_{idx:04d}.jpg"

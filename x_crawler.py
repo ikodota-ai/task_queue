@@ -532,12 +532,8 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
             # ---- 提取图片 ----
             image_urls: List[str] = []
 
-            if _has_gallery_icon(link):
-                image_urls = _extract_images_from_tweet(driver, link)
-            else:
-                thumb = _extract_grid_thumbnail(link)
-                if thumb:
-                    image_urls = [thumb]
+            # 点开弹窗取所有图（不区分单图/多图，X 单图也有 SVG 误判）
+            image_urls = _extract_images_from_tweet(driver, link)
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
