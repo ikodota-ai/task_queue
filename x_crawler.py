@@ -377,13 +377,45 @@ def _extract_grid_thumbnail(link) -> Optional[str]:
         return None
 
 
+# -----------------------------------------------------------
+# 多图帖子：点击弹框 → 翻页取所有图片
+# -----------------------------------------------------------
+
+def _extract_carousel_images(driver, link) -> List[str]:
+    """
+    点击多图帖子，在弹框中翻页提取所有图片 URL。
+    返回图片 URL 列表（可能含 CDN 缩略图和全尺寸图）。
+    """
+    grid_url = driver.current_url
+
+    # 点击帖子
+    try:
+        link.click()
+    except Exception:
+        return []
+    time.sleep(0.1)
+
+    # 情形 A：弹框模式（URL 不变，dialog 出现）
+    # if driver.current_url == grid_url:
+    images = _extract_images_from_tweet(driver)
+    _close_dialog(driver)
+    return images
+
+    # 情形 B：导航到了帖子页（旧版 Instagram）
+    # logger.info("Navigated to post page, extracting there")
+    # images = _extract_images_from_post_page(driver)
+    # driver.back()
+    # time.sleep(2)
+    # return images
+
 def _extract_images_from_tweet(driver, link) -> List[str]:
     """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗"""
     try:
-        link.click()
-    except:
+        WebDriverWait(driver, 3).until(
+            EC.presence_of_element_located((By.XPATH, "//div[@aria-roledescription='carousel']"))
+        )
+    except Exception:
         return []
-    time.sleep(2)
     images, seen = [], set()
 
     def _grab():
@@ -397,6 +429,7 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
                     seen.add(fixed)
                     images.append(fixed)
 
+    
     _grab()
     logger.info(f"  Tweet modal opened, initial: {len(images)} images")
 
@@ -424,6 +457,22 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             if no_new_streak >= 3:
                 break
 
+    
+    return images
+
+
+def _close_dialog(driver):
+    """关闭弹框"""
+
+    # close_btn = driver.find_elements(
+    #     By.XPATH,
+    #     "//div[@role='button']//svg[@aria-label='关闭']"
+    # )
+    # driver.execute_script("""
+    #     var els = document.querySelectorAll('div[role="button"] svg[aria-label="关闭"]');
+    #     if (els.length) els[0].parentElement.click();
+    # """)
+
     # 关闭弹窗（依次尝试多种 close）
     for xp in (
         "//div[@aria-roledescription='carousel']//button[@aria-label='close']",
@@ -440,10 +489,9 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
         except:
             pass
-    time.sleep(1)
-    return images
 
-
+    return
+   
 # -----------------------------------------------------------
 # 核心：收集推文 URL + 进入详情页提取图片
 # -----------------------------------------------------------
@@ -528,12 +576,16 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
             # ---- 提取图片 ----
             image_urls: List[str] = []
+            dom_changed = False
 
-            # 点开弹窗取所有图（不区分单图/多图，X 单图也有 SVG 误判）
-            image_urls = _extract_images_from_tweet(driver, link)
+            # 点开弹窗取所有图
+            image_urls = _extract_carousel_images(driver, link)
+            dom_changed = True  # 弹窗操作后 DOM 可能变化
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
+                if dom_changed:
+                    break  # DOM 变化，跳出重新获取链接
                 continue
 
             # ---- 写入 DB + 发下载子任务 ----
@@ -574,7 +626,8 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                     since_cursor_save = 0
 
             time.sleep(0.5)
-            # 弹窗模式 link 不失效，继续同页其他推文
+            if dom_changed:
+                break  # DOM 变化，下轮 scroll 重新获取链接
 
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")
