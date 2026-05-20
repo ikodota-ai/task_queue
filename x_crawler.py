@@ -389,28 +389,28 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
     seen = set()
 
     def _grab():
-        for img in driver.find_elements(
-            By.XPATH,
-            "//div[@aria-roledescription='carousel']//img"
+        for xp in (
+            "//div[@aria-roledescription='carousel']//img",
+            "//article//img[contains(@src, 'pbs.twimg.com')]",
         ):
-            src = img.get_attribute("src")
-            fixed = _fix_image_url(src)
-            if fixed and fixed not in seen:
-                seen.add(fixed)
-                images.append(fixed)
+            for img in driver.find_elements(By.XPATH, xp):
+                src = img.get_attribute("src")
+                fixed = _fix_image_url(src)
+                if fixed and fixed not in seen:
+                    seen.add(fixed)
+                    images.append(fixed)
 
     _grab()
-    logger.info(f"  Carousel opened, initial: {len(images)} images")
+    logger.info(f"  Tweet modal opened, initial: {len(images)} images")
 
-    # 翻页：依次尝试多语言 Next 按钮，直到找不到或连续 3 次无新图
+    # 翻页（仅多图有 Next slide）
     no_new_streak = 0
     for _ in range(50):
         before = len(images)
         next_btn = None
         for aria in ("Next slide", "下一页", "下一步"):
             btns = driver.find_elements(
-                By.XPATH,
-                f"//div[@aria-roledescription='carousel']//button[@aria-label='{aria}']"
+                By.XPATH, f"//button[@aria-label='{aria}']"
             )
             if btns:
                 next_btn = btns[0]
@@ -430,14 +430,18 @@ def _extract_images_from_tweet(driver, link) -> List[str]:
             if no_new_streak >= 3:
                 break
 
-    # 关闭弹窗回到列表页
-    try:
-        close_btn = driver.find_element(
-            By.XPATH,
-            "//div[@aria-roledescription='carousel']//button[@aria-label='close']"
-        )
-        close_btn.click()
-    except Exception:
+    # 关闭弹窗（依次尝试多种 close 按钮）
+    for xp in (
+        "//div[@aria-roledescription='carousel']//button[@aria-label='close']",
+        "//button[@aria-label='close']",
+        "//div[@role='dialog']//button[@aria-label='Close']",
+    ):
+        try:
+            driver.find_element(By.XPATH, xp).click()
+            break
+        except Exception:
+            continue
+    else:
         try:
             driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
         except Exception:
