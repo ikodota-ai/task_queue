@@ -134,6 +134,7 @@ def _extract_grid_thumbnail(link):
         return None
 
 def _extract_images_from_tweet(driver, link):
+    """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗"""
     try:
         link.click()
     except:
@@ -142,26 +143,55 @@ def _extract_images_from_tweet(driver, link):
     images, seen = [], set()
 
     def _grab():
-        for img in driver.find_elements(By.XPATH, "//div[@data-testid='tweetPhoto']//img"):
+        for img in driver.find_elements(
+            By.XPATH, "//div[@aria-roledescription='carousel']//img"
+        ):
             fixed = _fix_image_url(img.get_attribute("src"))
             if fixed and fixed not in seen:
                 seen.add(fixed)
                 images.append(fixed)
 
     _grab()
+    logger.info(f"  Carousel opened, initial: {len(images)} images")
+
+    no_new_streak = 0
     for _ in range(50):
         before = len(images)
+        next_btn = None
+        for aria in ("Next slide", "下一页", "下一步"):
+            btns = driver.find_elements(
+                By.XPATH,
+                f"//div[@aria-roledescription='carousel']//button[@aria-label='{aria}']"
+            )
+            if btns:
+                next_btn = btns[0]
+                break
+        if not next_btn:
+            break
         try:
-            driver.find_element(By.XPATH, "//button[@aria-label='Next']").click()
-            time.sleep(0.8)
-            _grab()
+            next_btn.click()
         except:
             break
-        if len(images) == before:
-            break
+        time.sleep(0.8)
+        _grab()
+        if len(images) > before:
+            no_new_streak = 0
+        else:
+            no_new_streak += 1
+            if no_new_streak >= 3:
+                break
 
-    driver.back()
-    time.sleep(1.5)
+    # 关闭弹窗
+    try:
+        driver.find_element(
+            By.XPATH, "//div[@aria-roledescription='carousel']//button[@aria-label='close']"
+        ).click()
+    except:
+        try:
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except:
+            pass
+    time.sleep(1)
     return images
 
 # ============================================================
@@ -187,7 +217,9 @@ def crawl_user(user_id: str, max_scrolls=20):
         same_h = 0
 
         for scroll in range(max_scrolls):
-            links = driver.find_elements(By.XPATH, "//a[contains(@href, '/photo/')]")
+            links = driver.find_elements(
+                By.XPATH, "//section[@role='region']//li[@role='listitem']//a"
+            )
             new_found = 0
 
             for link in links:
@@ -223,7 +255,6 @@ def crawl_user(user_id: str, max_scrolls=20):
                 total_tweets += 1
                 new_found += 1
                 time.sleep(0.5)
-                break  # stale links after navigation
 
             logger.info(f"Scroll {scroll+1}: +{new_found} tweets ({total_images} images)")
 
