@@ -420,7 +420,7 @@ def _extract_carousel_images(driver, link) -> List[str]:
         link.click()
     except Exception:
         return []
-    time.sleep(2)
+    time.sleep(0.1)
 
     # 情形 A：弹框模式（URL 不变，dialog 出现）
     # if driver.current_url == grid_url:
@@ -444,12 +444,9 @@ def _extract_from_dialog(driver) -> List[str]:
     不需要翻页。保留 JS 翻页作为兼容后备。
     """
     try:
-        WebDriverWait(driver, 5).until(
+        WebDriverWait(driver, 3).until(
             EC.presence_of_element_located((By.XPATH, "//div[@role='dialog']"))
         )
-
-
-
     except Exception:
         return []
 
@@ -534,47 +531,47 @@ def _close_dialog(driver):
     #     pass
 
 
-# def _extract_images_from_post_page(driver) -> List[str]:
-#     """在帖子页提取所有图片 URL（备选方案）"""
-#     images = []
-#     try:
-#         imgs = driver.find_elements(
-#             By.XPATH,
-#             "//div[@role='presentation']//img[contains(@src, 'cdninstagram.com')]"
-#         )
-#         if not imgs:
-#             imgs = driver.find_elements(
-#                 By.XPATH,
-#                 "//div[@role='button']//img[contains(@src, 'cdninstagram.com')]"
-#             )
-#         for img in imgs:
-#             src = img.get_attribute("src")
-#             if src and "profile" not in src and "avatar" not in src:
-#                 if src not in images:
-#                     images.append(src)
+def _extract_images_from_post_page(driver) -> List[str]:
+    """在帖子页提取所有图片 URL（备选方案）"""
+    images = []
+    try:
+        imgs = driver.find_elements(
+            By.XPATH,
+            "//div[@role='presentation']//img[contains(@src, 'cdninstagram.com')]"
+        )
+        if not imgs:
+            imgs = driver.find_elements(
+                By.XPATH,
+                "//div[@role='button']//img[contains(@src, 'cdninstagram.com')]"
+            )
+        for img in imgs:
+            src = img.get_attribute("src")
+            if src and "profile" not in src and "avatar" not in src:
+                if src not in images:
+                    images.append(src)
 
-#         # 多图翻页
-#         if len(images) > 1:
-#             while True:
-#                 try:
-#                     nbtn = driver.find_element(
-#                         By.XPATH, "//button[contains(@class, '_afxw')]"
-#                     )
-#                     nbtn.click()
-#                     time.sleep(1.5)
-#                     new_imgs = driver.find_elements(
-#                         By.XPATH,
-#                         "//div[@role='presentation']//img[contains(@src, 'cdninstagram.com')]"
-#                     )
-#                     for img in new_imgs:
-#                         src = img.get_attribute("src")
-#                         if src and "profile" not in src and src not in images:
-#                             images.append(src)
-#                 except Exception:
-#                     break
-#     except Exception:
-#         pass
-#     return images
+        # 多图翻页
+        if len(images) > 1:
+            while True:
+                try:
+                    nbtn = driver.find_element(
+                        By.XPATH, "//button[contains(@class, '_afxw')]"
+                    )
+                    nbtn.click()
+                    time.sleep(1.5)
+                    new_imgs = driver.find_elements(
+                        By.XPATH,
+                        "//div[@role='presentation']//img[contains(@src, 'cdninstagram.com')]"
+                    )
+                    for img in new_imgs:
+                        src = img.get_attribute("src")
+                        if src and "profile" not in src and src not in images:
+                            images.append(src)
+                except Exception:
+                    break
+    except Exception:
+        pass
+    return images
 
 
 # -----------------------------------------------------------
@@ -607,12 +604,12 @@ def _navigate_to_user(driver, user_id, retries=3) -> bool:
 def _crawl_user(user_id: str, incremental: bool = False) -> int:
     _start_heartbeat()
 
-    # 全量已完成检查：无游标 + 有已处理 → 上次已跑完，跳过
+    # 全量已完成检查：无游标 + 有已处理 → 上次跑完但不跳过
+    # _is_processed 会在循环中逐帖跳过已处理的
     if not incremental:
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
-            logger.info(f"Full crawl for {user_id} already completed, skipping")
-            return 0
+            logger.info(f"Full crawl for {user_id}: no cursor, will skip already-processed posts")
 
     driver = _get_driver()
     processed = 0
