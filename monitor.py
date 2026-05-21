@@ -73,6 +73,7 @@ def _get_db():
         user=cfg["mysql_user"], password=cfg["mysql_password"],
         database=cfg["mysql_db"], charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=5, read_timeout=10,
     )
 
 
@@ -241,10 +242,37 @@ def api_status():
         c = active_crawls[0]
         current_crawl = {
             "user": c["user_id"],
-            "platform": c["queue"].split(":")[1],  # ig or x
-            "type": c["queue"].split(":")[2],       # full or incr
+            "platform": c["queue"].split(":")[1],
+            "type": c["queue"].split(":")[2],
             "task_id": c["task_id"],
         }
+
+    # ===== 最近完成的抓取任务 (scan task_meta 取 done, 限 20) =====
+    completed_crawls = []
+    done_keys = []
+    for k in qr.keys("task_meta:crawl:*"):
+        done_keys.append(k)
+        if len(done_keys) >= 50:
+            break
+    # pipeline 批量查 status
+    pipe2 = qr.pipeline()
+    for k in done_keys:
+        pipe2.hget(k, "status")
+    results = pipe2.execute()
+    for i, k in enumerate(done_keys):
+        if results[i] != "done":
+            continue
+        tid = k.rsplit(":", 1)[-1][:8]
+        q = ":".join(k.split(":")[1:3])
+        args_str = qr.hget(k, "args") or ""
+        user_id = "?"
+        try:
+            a = eval(args_str)
+            user_id = a[0] if a else "?"
+        except Exception:
+            pass
+        completed_crawls.append({"queue": q, "user_id": user_id, "task_id": tid})
+    completed_crawls = completed_crawls[-10:][::-1]
 
     return jsonify({
         "task_stats": task_stats,
@@ -255,6 +283,8 @@ def api_status():
         "queues": queues,
         "workers": workers,
         "active_downloads": active_downloads,
+        "active_crawls": active_crawls,
+        "completed_crawls": completed_crawls,
         "dl_pending": sum(q["pending"] for q in queues.values() if q["pending"]),
         "task_meta": {"total": tm_total, "by_type": tm_by_q},
         "ts": int(time.time()),
@@ -380,6 +410,11 @@ async function refresh(){
       now = '<span style="color:#6a8a9e">等待任务...</span>';
     }
     document.getElementById('active-now').innerHTML = now;
+    // 活跃抓取表格
+    let at = '<tr><th>队列</th><th>用户</th></tr>';
+    for(const c of d.active_crawls||[])
+      at += `<tr><td>${c.queue}</td><td>@${c.user_id}</td></tr>`;
+    document.getElementById('active-table').innerHTML = at || '';
 
     // ===== 队列表 =====
     let qh = '<tr><th>队列</th><th>待处理</th><th>处理中</th><th>重试</th><th>死信</th></tr>';
@@ -413,11 +448,11 @@ async function refresh(){
     }
     document.getElementById('dl-summary').innerHTML = ds;
 
-    // 最近
-    let rh = '<tr><th>时间</th><th>平台</th><th>类型</th><th>用户</th><th>状态</th></tr>';
-    for(const t of d.recent_tasks||[])
-      rh += `<tr><td>${t.upd}</td><td>${t.platform}</td><td>${t.task_type}</td><td>@${t.user_id}</td><td><span class="tag tag-${t.status}">${t.status}</span></td></tr>`;
-    document.getElementById('recent').innerHTML = rh;
+    // 最近完成的抓取 (Redis task_meta)
+    let rh = '<tr><th>队列</th><th>用户</th><th>任务ID</th></tr>';
+    for(const c of d.completed_crawls||[])
+      rh += `<tr><td>${c.queue}</td><td>@${c.user_id}</td><td>${c.task_id}</td></tr>`;
+    document.getElementById('recent').innerHTML = rh || '<tr><td colspan=3>暂无</td></tr>';
 
     document.getElementById('clock').innerText = new Date().toLocaleTimeString();
   }catch(e){}
