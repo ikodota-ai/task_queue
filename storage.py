@@ -61,7 +61,7 @@ def _get_backend():
 
 def upload_from_url(url: str, save_path: str) -> str:
     """下载图片并上传到存储，返回可访问 URL"""
-    return _get_backend().put_from_url(url, save_path)
+    return _get_backend().put_from_url(save_path, url)
 
 
 def get_url(save_path: str) -> str:
