@@ -38,10 +38,8 @@ def sub_download_image(url: str, save_path: str, db_id: int = None, platform: st
 
     Returns: 最终文件路径
     """
-    # 随机延迟 0.5~2s，避免高频请求
-    time.sleep(random.uniform(0.5, 2))
-
     # 使用统一存储后端（本地/阿里云/七牛/腾讯云）
+    # OSS 直拉模式无需延迟——服务器只调 API，不下载
     from storage import upload_from_url, get_url
     file_url = upload_from_url(url, save_path)
     save_path = file_url  # 返回的是可访问 URL，后续 DB 更新用这个
