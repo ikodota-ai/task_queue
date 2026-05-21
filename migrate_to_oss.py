@@ -28,6 +28,7 @@ parser.add_argument("--threads", type=int, default=5, help="并发数 (默认 5)
 parser.add_argument("--prefix", default="", help="只迁移指定前缀目录")
 parser.add_argument("--keep", action="store_true", help="保留本地文件 (默认删除以释放磁盘)")
 parser.add_argument("--move-to", default="", help="迁完后移动到指定目录而非删除")
+parser.add_argument("--skip-existing", action="store_true", help="跳过 OSS 已存在的文件")
 args = parser.parse_args()
 
 # 准备迁移目录
@@ -62,11 +63,22 @@ if args.dry_run:
 # 迁移
 uploaded = 0
 failed = 0
+skipped = 0
 total = len(files)
 start = time.time()
 
 def upload(args_tuple):
     full_path, rel_path = args_tuple
+    if args.skip_existing and backend.exists(rel_path):
+        # 远程已存在 → 清理本地，跳过上传
+        if not args.keep:
+            if _move_dir:
+                dest = os.path.join(_move_dir, rel_path)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                os.rename(full_path, dest)
+            else:
+                os.remove(full_path)
+        return (rel_path, "skipped", None)
     try:
         with open(full_path, "rb") as f:
             backend.put(rel_path, f.read())
@@ -85,19 +97,21 @@ def upload(args_tuple):
 with ThreadPoolExecutor(max_workers=args.threads) as pool:
     futures = {pool.submit(upload, f): f for f in files}
     for future in as_completed(futures):
-        rel, ok, err = future.result()
-        if ok:
+        rel, status, err = future.result()
+        if status is True:
             uploaded += 1
+        elif status == "skipped":
+            skipped += 1
         else:
             failed += 1
             if failed <= 10:
                 print(f"  FAIL: {rel} - {err}")
-        if (uploaded + failed) % 100 == 0:
+        if (uploaded + failed + skipped) % 100 == 0:
             elapsed = time.time() - start
-            rate = (uploaded + failed) / elapsed if elapsed > 0 else 0
-            eta = (total - uploaded - failed) / rate if rate > 0 else 0
-            print(f"  {uploaded + failed}/{total} ({uploaded} ok, {failed} fail) "
+            rate = (uploaded + failed + skipped) / elapsed if elapsed > 0 else 0
+            eta = (total - uploaded - failed - skipped) / rate if rate > 0 else 0
+            print(f"  {uploaded + failed + skipped}/{total} ({uploaded} ok, {skipped} skip, {failed} fail) "
                   f"{rate:.1f} files/s, 剩余 {eta:.0f}s")
 
 elapsed = time.time() - start
-print(f"\n完成: {uploaded} ok, {failed} fail, 耗时 {elapsed:.0f}s")
+print(f"\n完成: {uploaded} ok, {skipped} skipped, {failed} fail, 耗时 {elapsed:.0f}s")

@@ -75,6 +75,11 @@ def get_url(save_path: str) -> str:
     return _get_backend().url(save_path)
 
 
+def exists(save_path: str) -> bool:
+    """检查远程文件是否存在"""
+    return _get_backend().exists(save_path)
+
+
 class LocalBackend:
     def __init__(self):
         self.base_dir = os.getenv("STORAGE_LOCAL_DIR", "/home/www/uploads")
@@ -87,6 +92,10 @@ class LocalBackend:
         with open(full, "wb") as f:
             f.write(data)
         return self.url(path)
+
+    def exists(self, path) -> bool:
+        import os as _os
+        return _os.path.exists(_os.path.join(self.base_dir, path))
 
     def url(self, path) -> str:
         if self.base_url:
@@ -108,6 +117,13 @@ class AliyunOSSBackend:
         )
         self.base_url = os.getenv("STORAGE_BASE_URL", "").rstrip("/")
 
+    def exists(self, path) -> bool:
+        try:
+            self.bucket.get_object_meta(path)
+            return True
+        except:
+            return False
+
     def put(self, path, data, content_type=None):
         headers = {"Content-Type": content_type} if content_type else {}
         self.bucket.put_object(path, data, headers=headers)
@@ -125,6 +141,12 @@ class QiniuBackend:
         self.auth = Auth(os.getenv("QINIU_ACCESS_KEY"), os.getenv("QINIU_SECRET_KEY"))
         self.bucket_name = os.getenv("QINIU_BUCKET")
         self.base_url = os.getenv("QINIU_DOMAIN", "").rstrip("/")
+
+    def exists(self, path) -> bool:
+        from qiniu import BucketManager
+        bucket = BucketManager(self.auth)
+        ret, info = bucket.stat(self.bucket_name, path)
+        return info.status_code == 200
 
     def put(self, path, data, content_type=None):
         from qiniu import put_data
@@ -149,6 +171,13 @@ class TencentCOSBackend:
         self.client = CosS3Client(config)
         self.bucket = os.getenv("TENCENT_COS_BUCKET")
         self.base_url = os.getenv("STORAGE_BASE_URL", "").rstrip("/")
+
+    def exists(self, path) -> bool:
+        try:
+            self.client.head_object(Bucket=self.bucket, Key=path)
+            return True
+        except:
+            return False
 
     def put(self, path, data, content_type=None):
         kwargs = {"Body": data}
