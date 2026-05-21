@@ -132,13 +132,17 @@ class AliyunOSSBackend:
         return self.url(path)
 
     def put_from_url(self, path, source_url) -> str:
-        """OSS 直接 fetch URL，失败则下载后上传"""
+        """OSS 异步 fetch URL，失败则下载后上传"""
         try:
-            result = self.bucket.put_object_with_url(path, source_url)
+            from oss2.models import AsyncFetchTaskConfiguration
+            task = AsyncFetchTaskConfiguration(url=source_url, object_name=path,
+                                               ignore_same_key=False)
+            result = self.bucket.put_async_fetch_task(task)
             if result.status == 200:
                 logger.info(f"[OSS fetch] {source_url[:80]} -> {path}")
                 return self.url(path)
-        except Exception:
+        except Exception as e:
+            # OSS 返回错误时也尝试降级（网络问题等）
             pass
         # 降级：下载到内存再上传
         logger.info(f"[download+upload] {source_url[:80]} -> {path}")
