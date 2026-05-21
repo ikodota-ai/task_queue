@@ -88,6 +88,7 @@ class LocalBackend:
         return self.url(path)
 
     def put_from_url(self, path, source_url) -> str:
+        logger.info(f"[local save] {source_url[:80]} -> {path}")
         resp = requests.get(source_url, stream=True, timeout=60,
                             headers={"Referer": "https://www.instagram.com/",
                                      "User-Agent": "Mozilla/5.0"})
@@ -135,10 +136,12 @@ class AliyunOSSBackend:
         try:
             result = self.bucket.put_object_with_url(path, source_url)
             if result.status == 200:
+                logger.info(f"[OSS fetch] {source_url[:80]} -> {path}")
                 return self.url(path)
         except Exception:
             pass
         # 降级：下载到内存再上传
+        logger.info(f"[download+upload] {source_url[:80]} -> {path}")
         resp = requests.get(source_url, stream=True, timeout=60,
                             headers={"Referer": "https://www.instagram.com/",
                                      "User-Agent": "Mozilla/5.0"})
@@ -179,9 +182,11 @@ class QiniuBackend:
             bucket = BucketManager(self.auth)
             ret, info = bucket.fetch(source_url, self.bucket_name, path)
             if info.status_code == 200:
+                logger.info(f"[Qiniu fetch] {source_url[:80]} -> {path}")
                 return self.url(path)
         except Exception:
             pass
+        logger.info(f"[download+upload] {source_url[:80]} -> {path}")
         resp = requests.get(source_url, stream=True, timeout=60,
                             headers={"Referer": "https://www.instagram.com/",
                                      "User-Agent": "Mozilla/5.0"})
@@ -220,12 +225,14 @@ class TencentCOSBackend:
 
     def put_from_url(self, path, source_url) -> str:
         try:
+            logger.info(f"[COS fetch] {source_url[:80]} -> {path}")
             self.client.put_object(
                 Bucket=self.bucket, Key=path,
                 Body=requests.get(source_url, timeout=30).content,
             )
             return self.url(path)
         except Exception:
+            logger.info(f"[download+upload] {source_url[:80]} -> {path}")
             resp = requests.get(source_url, stream=True, timeout=60,
                                 headers={"Referer": "https://www.instagram.com/",
                                          "User-Agent": "Mozilla/5.0"})
