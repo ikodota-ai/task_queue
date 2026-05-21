@@ -28,9 +28,14 @@ import os
 import io
 import hashlib
 import logging
+from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 import requests
+
+# 自动加载 .env
+load_dotenv(Path(__file__).parent / ".env", override=True)
 
 logger = logging.getLogger("Storage")
 

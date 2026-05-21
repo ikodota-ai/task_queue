@@ -26,7 +26,15 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true", help="只统计不迁移")
 parser.add_argument("--threads", type=int, default=5, help="并发数 (默认 5)")
 parser.add_argument("--prefix", default="", help="只迁移指定前缀目录")
+parser.add_argument("--keep", action="store_true", help="保留本地文件 (默认删除以释放磁盘)")
+parser.add_argument("--move-to", default="", help="迁完后移动到指定目录而非删除")
 args = parser.parse_args()
+
+# 准备迁移目录
+_move_dir = None
+if args.move_to:
+    _move_dir = args.move_to
+    os.makedirs(_move_dir, exist_ok=True)
 
 base = os.getenv("STORAGE_LOCAL_DIR", "/home/www/uploads")
 print(f"本地目录: {base}")
@@ -62,6 +70,19 @@ def upload(args_tuple):
     try:
         with open(full_path, "rb") as f:
             backend.put(rel_path, f.read())
+        # 上传成功 → 清理本地文件
+        if not args.keep:
+            if _move_dir:
+                dest = os.path.join(_move_dir, rel_path)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                os.rename(full_path, dest)
+            else:
+                os.remove(full_path)
+            # 清理因文件被移走而变空的目录
+            try:
+                os.removedirs(os.path.dirname(full_path))
+            except OSError:
+                pass
         return (rel_path, True, None)
     except Exception as e:
         return (rel_path, False, str(e))
