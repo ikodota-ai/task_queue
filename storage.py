@@ -61,13 +61,7 @@ def _get_backend():
 
 def upload_from_url(url: str, save_path: str) -> str:
     """下载图片并上传到存储，返回可访问 URL"""
-    resp = requests.get(url, stream=True, timeout=60,
-                        headers={"Referer": "https://www.instagram.com/",
-                                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
-                                               "AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36"})
-    resp.raise_for_status()
-    data = resp.content
-    return _get_backend().put(save_path, data, resp.headers.get("content-type", "image/jpeg"))
+    return _get_backend().put_from_url(url, save_path)
 
 
 def get_url(save_path: str) -> str:
@@ -92,6 +86,13 @@ class LocalBackend:
         with open(full, "wb") as f:
             f.write(data)
         return self.url(path)
+
+    def put_from_url(self, path, source_url) -> str:
+        resp = requests.get(source_url, stream=True, timeout=60,
+                            headers={"Referer": "https://www.instagram.com/",
+                                     "User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return self.put(path, resp.content, resp.headers.get("content-type", "image/jpeg"))
 
     def exists(self, path) -> bool:
         import os as _os
@@ -129,6 +130,22 @@ class AliyunOSSBackend:
         self.bucket.put_object(path, data, headers=headers)
         return self.url(path)
 
+    def put_from_url(self, path, source_url) -> str:
+        """OSS 直接 fetch URL，失败则下载后上传"""
+        try:
+            result = self.bucket.put_object_with_url(path, source_url)
+            if result.status == 200:
+                return self.url(path)
+        except Exception:
+            pass
+        # 降级：下载到内存再上传
+        resp = requests.get(source_url, stream=True, timeout=60,
+                            headers={"Referer": "https://www.instagram.com/",
+                                     "User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return self.put(path, resp.content,
+                        resp.headers.get("content-type", "image/jpeg"))
+
     def url(self, path) -> str:
         if self.base_url:
             return f"{self.base_url}/{path}"
@@ -155,6 +172,21 @@ class QiniuBackend:
         if info.status_code != 200:
             raise RuntimeError(f"Qiniu upload failed: {info}")
         return self.url(path)
+
+    def put_from_url(self, path, source_url) -> str:
+        try:
+            from qiniu import BucketManager
+            bucket = BucketManager(self.auth)
+            ret, info = bucket.fetch(source_url, self.bucket_name, path)
+            if info.status_code == 200:
+                return self.url(path)
+        except Exception:
+            pass
+        resp = requests.get(source_url, stream=True, timeout=60,
+                            headers={"Referer": "https://www.instagram.com/",
+                                     "User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return self.put(path, resp.content)
 
     def url(self, path) -> str:
         return f"{self.base_url}/{path}"
@@ -185,6 +217,20 @@ class TencentCOSBackend:
             kwargs["ContentType"] = content_type
         self.client.put_object(Bucket=self.bucket, Key=path, **kwargs)
         return self.url(path)
+
+    def put_from_url(self, path, source_url) -> str:
+        try:
+            self.client.put_object(
+                Bucket=self.bucket, Key=path,
+                Body=requests.get(source_url, timeout=30).content,
+            )
+            return self.url(path)
+        except Exception:
+            resp = requests.get(source_url, stream=True, timeout=60,
+                                headers={"Referer": "https://www.instagram.com/",
+                                         "User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            return self.put(path, resp.content)
 
     def url(self, path) -> str:
         if self.base_url:
