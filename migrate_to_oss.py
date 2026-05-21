@@ -78,11 +78,6 @@ def upload(args_tuple):
                 os.rename(full_path, dest)
             else:
                 os.remove(full_path)
-            # 清理因文件被移走而变空的目录
-            try:
-                os.removedirs(os.path.dirname(full_path))
-            except OSError:
-                pass
         return (rel_path, True, None)
     except Exception as e:
         return (rel_path, False, str(e))
