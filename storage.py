@@ -132,20 +132,8 @@ class AliyunOSSBackend:
         return self.url(path)
 
     def put_from_url(self, path, source_url) -> str:
-        """OSS 异步 fetch URL，失败则下载后上传"""
-        try:
-            from oss2.models import AsyncFetchTaskConfiguration
-            task = AsyncFetchTaskConfiguration(url=source_url, object_name=path,
-                                               ignore_same_key=False)
-            result = self.bucket.put_async_fetch_task(task)
-            if result.status == 200:
-                logger.info(f"[OSS fetch] {source_url[:80]} -> {path}")
-                return self.url(path)
-        except Exception as e:
-            # OSS 返回错误时也尝试降级（网络问题等）
-            pass
-        # 降级：下载到内存再上传
-        logger.info(f"[download+upload] {source_url[:80]} -> {path}")
+        """下载后上传到 OSS"""
+        logger.info(f"[OSS upload] {source_url[:80]} -> {path}")
         resp = requests.get(source_url, stream=True, timeout=60,
                             headers={"Referer": "https://www.instagram.com/",
                                      "User-Agent": "Mozilla/5.0"})
@@ -181,16 +169,7 @@ class QiniuBackend:
         return self.url(path)
 
     def put_from_url(self, path, source_url) -> str:
-        try:
-            from qiniu import BucketManager
-            bucket = BucketManager(self.auth)
-            ret, info = bucket.fetch(source_url, self.bucket_name, path)
-            if info.status_code == 200:
-                logger.info(f"[Qiniu fetch] {source_url[:80]} -> {path}")
-                return self.url(path)
-        except Exception:
-            pass
-        logger.info(f"[download+upload] {source_url[:80]} -> {path}")
+        logger.info(f"[Qiniu upload] {source_url[:80]} -> {path}")
         resp = requests.get(source_url, stream=True, timeout=60,
                             headers={"Referer": "https://www.instagram.com/",
                                      "User-Agent": "Mozilla/5.0"})
@@ -228,20 +207,12 @@ class TencentCOSBackend:
         return self.url(path)
 
     def put_from_url(self, path, source_url) -> str:
-        try:
-            logger.info(f"[COS fetch] {source_url[:80]} -> {path}")
-            self.client.put_object(
-                Bucket=self.bucket, Key=path,
-                Body=requests.get(source_url, timeout=30).content,
-            )
-            return self.url(path)
-        except Exception:
-            logger.info(f"[download+upload] {source_url[:80]} -> {path}")
-            resp = requests.get(source_url, stream=True, timeout=60,
-                                headers={"Referer": "https://www.instagram.com/",
-                                         "User-Agent": "Mozilla/5.0"})
-            resp.raise_for_status()
-            return self.put(path, resp.content)
+        logger.info(f"[COS upload] {source_url[:80]} -> {path}")
+        resp = requests.get(source_url, stream=True, timeout=60,
+                            headers={"Referer": "https://www.instagram.com/",
+                                     "User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return self.put(path, resp.content)
 
     def url(self, path) -> str:
         if self.base_url:
