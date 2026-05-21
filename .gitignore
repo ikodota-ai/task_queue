@@ -21,3 +21,6 @@ Thumbs.db
 .producer.pid
 *.pid
 logs/
+chrome-linux64/
+chromedriver
+chromedriver-linux64/
