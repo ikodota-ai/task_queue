@@ -303,7 +303,7 @@ class TaskQueue:
             elapsed = str(int(time.time() - _current_task.enqueued_at))
             tid = _current_task.task_id[:8]
         else:
-            qname = self.queue_names[0] if self.queue_names else ""
+            qname = ""
         self.redis.setex(f"worker:heartbeat:{worker_id}", WORKER_HEARTBEAT_TIMEOUT,
                          f"{host}|{time.time()}|{task_info}|{elapsed}|{qname}|{tid}")
 
