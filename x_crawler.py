@@ -76,12 +76,27 @@ def _mark_processed(uid, pid):
 # DB 写入
 # -----------------------------------------------------------
 
+_cached_db = None
+
 def _get_db():
-    return pymysql.connect(
-        host=cfg["mysql_host"], port=cfg["mysql_port"],
-        user=cfg["mysql_user"], password=cfg["mysql_password"],
-        database=cfg["mysql_db"], charset="utf8mb4",
-    )
+    global _cached_db
+    if _cached_db is None or not _cached_db.open:
+        _cached_db = pymysql.connect(
+            host=cfg["mysql_host"], port=cfg["mysql_port"],
+            user=cfg["mysql_user"], password=cfg["mysql_password"],
+            database=cfg["mysql_db"], charset="utf8mb4",
+            autocommit=False,
+        )
+    return _cached_db
+
+def _close_db():
+    global _cached_db
+    if _cached_db:
+        try:
+            _cached_db.close()
+        except Exception:
+            pass
+        _cached_db = None
 
 def _lookup_star_id(user_id: str) -> Optional[int]:
     db = _get_db()
@@ -94,7 +109,7 @@ def _lookup_star_id(user_id: str) -> Optional[int]:
         row = cur.fetchone()
         return row[0] if row else None
     finally:
-        db.close()
+        pass  # 复用连接
 
 def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str, source: str = "x") -> int:
     db = _get_db()
@@ -109,7 +124,7 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
         db.commit()
         return cur.lastrowid
     finally:
-        db.close()
+        pass  # 复用连接
 
 
 # -----------------------------------------------------------
@@ -133,7 +148,7 @@ def _update_crawl_status(db_task_id: int, status: str, images_count: int = None)
             )
         db.commit()
     finally:
-        db.close()
+        pass  # 复用连接
 
 def _is_full_crawl_done(user_id: str) -> bool:
     """检查用户全量抓取是否已完成"""
@@ -150,7 +165,7 @@ def _is_full_crawl_done(user_id: str) -> bool:
         if row and row[0] == "done":
             return True
     finally:
-        db.close()
+        pass  # 复用连接
 
     if _state_redis().scard(_pkey(user_id)) > 0:
         return True
