@@ -323,34 +323,18 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
 
 
 
-<!-- 中排：左-活跃抓取 + 右-队列 -->
-<div class="row" style="margin-top:10px">
-<!-- 今日工作量 + 进度总览 -->
-  <div class="col">
-    <div class="row" id="overview" style="margin-bottom:8px"></div>
-  </div>
-  <div class="col">
-    <h2>&#x25b6; 活跃抓取</h2>
-    <div id="active-now" style="padding:8px;background:#162636;border-radius:4px;min-height:40px"></div>
-    <table id="active-table" style="margin-top:4px"></table>
-  </div>
-  <div class="col">
-    <h2>&#x2630; 队列</h2>
-    <table id="queues"></table>
-  </div>
-</div>
+<!-- 顶部总览 -->
+<div class="row" id="overview" style="margin-bottom:6px"></div>
 
-<!-- Worker + 下载 -->
-<div class="row" style="margin-top:8px">
-  <div class="col">
-    <h2>&#x25cf; Worker</h2>
-    <div id="workers" style="font-size:11px;font-size:1.5rem;"></div>
-    <div id="tm-info" style="font-size:10px;color:#6a8a9e;margin-top:4px"></div>
-  </div>
-  <div class="col">
-    <h2>&#x21e9; 下载队列: <span id="dl-total" style="color:#fa0">0</span></h2>
-    <div id="dl-summary" style="font-size:11px;font-size:1.5rem;color:#6a8a9e"></div>
-  </div>
+<!-- Worker + 活跃 + 队列 合一 -->
+<h2>&#x25b6; 运行状态</h2>
+<table id="run-status"></table>
+
+<!-- 下载 -->
+<div style="margin-top:6px">
+  <span>&#x21e9; 下载队列: <b id="dl-total" style="color:#fa0">0</b></span>
+  <span id="dl-summary" style="font-size:11px;font-size:1.5rem;color:#6a8a9e;margin-left:10px"></span>
+  <span id="tm-info" style="font-size:10px;font-size:1.5rem;color:#6a8a9e;margin-left:10px"></span>
 </div>
 
 <!-- 手动入队 -->
@@ -409,30 +393,28 @@ async function refresh(){
     } else {
       now = '<span style="color:#6a8a9e">等待任务...</span>';
     }
-    document.getElementById('active-now').innerHTML = now;
-    // 活跃抓取表格
-    let at2 = '<tr><th>队列</th><th>用户</th></tr>';
-    for(const c of d.active_crawls||[])
-      at2 += `<tr><td>${c.queue}</td><td>@${c.user_id}</td></tr>`;
-    document.getElementById('active-table').innerHTML = at2 || '';
-
-    // ===== 队列表 =====
-    let qh = '<tr><th>队列</th><th>待处理</th><th>处理中</th><th>重试</th><th>死信</th></tr>';
-    for(const [q, v] of Object.entries(d.queues||{})){
-      const p = v.pending>0?'color:#fa0':'', r = v.retry>0?'color:#e55':'', d2 = v.dead>0?'color:#e55':'';
-      qh += `<tr><td>${q}</td><td style="${p}">${v.pending}</td><td>${v.processing}</td><td style="${r}">${v.retry}</td><td style="${d2}">${v.dead}</td></tr>`;
+    // ===== 合并表: Worker + 队列 + 活跃抓取 =====
+    const crawlsByQ = {};
+    for(const c of d.active_crawls||[]) crawlsByQ[c.queue] = (crawlsByQ[c.queue]||'') + `@${c.user_id} `;
+    const wList = Object.entries(d.workers||{});
+    const qnames = ['crawl:ig:full','crawl:ig:incr','crawl:x:full','crawl:x:incr','dl:ig','dl:x'];
+    let rs = '<tr><th>Worker</th><th>主机</th><th>心跳</th><th>活跃抓取</th><th>队列</th><th>待处理</th><th>重试</th><th>死信</th></tr>';
+    for(let i=0; i<Math.max(wList.length, qnames.length); i++){
+      const w = wList[i];
+      const qn = qnames[i]||'';
+      const qv = d.queues?.[qn] || {};
+      rs += '<tr>';
+      rs += w ? `<td><span class="${w[1].alive?'alive':'dead'}">&#x25cf;</span> ${w[0]}</td><td style="color:#5af">@${w[1].host||'?'}</td><td style="color:#6a8a9e">${w[1].last_seen_sec}s</td>` : '<td colspan=3></td>';
+      rs += `<td>${crawlsByQ[qn]||''}</td>`;
+      rs += `<td>${qn}</td><td style="color:#fa0">${qv.pending||0}</td><td style="color:#e55">${qv.retry||0}</td><td style="color:#e55">${qv.dead||0}</td>`;
+      rs += '</tr>';
     }
-    document.getElementById('queues').innerHTML = qh;
+    document.getElementById('run-status').innerHTML = rs;
 
-    // Worker
-    let wh = '';
-    for(const [w, s] of Object.entries(d.workers||{}))
-      wh += `<span class="${s.alive?'alive':'dead'}">&#x25cf;</span> ${w} <span style="color:#5af">@${s.host||'?'}</span> <span style="color:#6a8a9e">${s.last_seen_sec}s</span> &nbsp;`;
-    document.getElementById('workers').innerHTML = wh || '无';
     // task_meta 概况
     const tm = d.task_meta;
     document.getElementById('tm-info').innerHTML = tm
-      ? `Redis: ${tm.total} 条任务记录 | IG下载 ${tm.by_type['dl:ig']||0} | X下载 ${tm.by_type['dl:x']||0} | 抓取 ${tm.by_type['crawl']||0}`
+      ? `Redis: ${tm.total} 条记录 | IG下载 ${tm.by_type['dl:ig']||0} | X下载 ${tm.by_type['dl:x']||0} | 抓取 ${tm.by_type['crawl']||0}`
       : '';
 
     // 下载
