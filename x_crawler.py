@@ -692,11 +692,23 @@ def x_full_crawl(user_id: str, db_task_id: int = None) -> str:
         if db_task_id:
             _update_crawl_status(db_task_id, "done", count)
         result = f"full crawl: {count} images"
-        # 全量完成后自动投增量
+        # 全量完成后自动投增量（写 MySQL）
+        db_task_id = 0
+        try:
+            db = _get_db()
+            cur = db.cursor()
+            cur.execute(
+                f"INSERT INTO {cfg['table_prefix']}crawl_tasks (platform, task_type, user_id, status) VALUES ('x', 'incr', %s, 'queued')",
+                (user_id,),
+            )
+            db.commit()
+            db_task_id = cur.lastrowid
+        except Exception:
+            pass
         tq = TaskQueue()
         tq.redis = _queue_redis()
-        tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id)
-        logger.info(f"Auto-enqueued incremental task for {user_id}")
+        tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id, db_task_id)
+        logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
         return result
     except Exception:
         if db_task_id:
@@ -720,13 +732,25 @@ def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
         if db_task_id:
             _update_crawl_status(db_task_id, "done", count)
         result = f"incremental crawl: {count} images"
-        # 增量自循环：6 小时后再入队
-        task = Task("x_incremental_crawl", (user_id,), {}, "crawl:x:incr")
+        # 增量自循环：6 小时后再入队（写 MySQL）
+        db_task_id = 0
+        try:
+            db = _get_db()
+            cur = db.cursor()
+            cur.execute(
+                f"INSERT INTO {cfg['table_prefix']}crawl_tasks (platform, task_type, user_id, status) VALUES ('x', 'incr', %s, 'queued')",
+                (user_id,),
+            )
+            db.commit()
+            db_task_id = cur.lastrowid
+        except Exception:
+            pass
+        task = Task("x_incremental_crawl", (user_id, db_task_id), {}, "crawl:x:incr")
         tq = TaskQueue()
         tq.redis = _queue_redis()
         tq.redis.zadd(tq.retry_key("crawl:x:incr"),
                       {json.dumps(task.to_dict()): time.time() + 6 * 3600})
-        logger.info(f"Scheduled next incremental for {user_id} in 6h")
+        logger.info(f"Scheduled next incremental for {user_id} in 6h (db_id={db_task_id})")
         return result
     except Exception:
         if db_task_id:
