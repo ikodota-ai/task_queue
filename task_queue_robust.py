@@ -286,13 +286,17 @@ class TaskQueue:
         import socket
         host = socket.gethostname().split(".")[0]
         task_info = ""
+        elapsed = ""
         if _current_task:
             args = _current_task.args
             user = str(args[0]) if args else "?"
-            queue = _current_task.queue_name.split(":")[-1]  # full/incr
-            task_info = f"{queue}:{user}"
+            qname = _current_task.queue_name
+            task_info = f"{qname}:{user}"
+            elapsed = str(int(time.time() - _current_task.enqueued_at))
+        else:
+            qname = self.queue_names[0] if self.queue_names else ""
         self.redis.setex(f"worker:heartbeat:{worker_id}", WORKER_HEARTBEAT_TIMEOUT,
-                         f"{host}|{time.time()}|{task_info}")
+                         f"{host}|{time.time()}|{task_info}|{elapsed}|{qname}")
 
     def get_active_workers(self) -> List[str]:
         """返回活跃 Worker ID 列表"""
