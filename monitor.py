@@ -184,10 +184,12 @@ def api_status():
     for k in qr.keys("worker:heartbeat:*"):
         wid = k.split(":", 2)[2]
         raw = qr.get(k) or "|0"
-        host = raw.split("|")[0] if "|" in raw else "?"
-        ts = float(raw.split("|")[-1] or 0)
+        parts = raw.split("|")
+        host = parts[0] if len(parts) > 0 else "?"
+        ts = float(parts[1]) if len(parts) > 1 else 0
+        activity = parts[2] if len(parts) > 2 else ""
         age = int(time.time() - ts)
-        workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host}
+        workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host, "activity": activity}
 
     # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
     active_crawls = []
@@ -326,9 +328,13 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
 <!-- 顶部总览 -->
 <div class="row" id="overview" style="margin-bottom:6px"></div>
 
-<!-- Worker + 活跃 + 队列 合一 -->
-<h2>&#x25b6; 运行状态</h2>
+<!-- Worker + 活跃抓取 -->
+<h2>&#x25b6; Worker</h2>
 <table id="run-status"></table>
+
+<!-- 队列 -->
+<h2>&#x2630; 队列</h2>
+<table id="queues-table"></table>
 
 <!-- 下载 -->
 <div style="margin-top:6px">
@@ -393,23 +399,27 @@ async function refresh(){
     } else {
       now = '<span style="color:#6a8a9e">等待任务...</span>';
     }
-    // ===== 合并表: Worker + 队列 + 活跃抓取 =====
-    const crawlsByQ = {};
-    for(const c of d.active_crawls||[]) crawlsByQ[c.queue] = (crawlsByQ[c.queue]||'') + `@${c.user_id} `;
-    const wList = Object.entries(d.workers||{});
-    const qnames = ['crawl:ig:full','crawl:ig:incr','crawl:x:full','crawl:x:incr','dl:ig','dl:x'];
-    let rs = '<tr><th>Worker</th><th>主机</th><th>心跳</th><th>活跃抓取</th><th>队列</th><th>待处理</th><th>重试</th><th>死信</th></tr>';
-    for(let i=0; i<Math.max(wList.length, qnames.length); i++){
-      const w = wList[i];
-      const qn = qnames[i]||'';
-      const qv = d.queues?.[qn] || {};
+    // ===== Worker 表 (每行一个 Worker + 正在做什么) =====
+    let rs = '<tr><th>Worker</th><th>主机</th><th>心跳</th><th>正在抓取</th></tr>';
+    for(const [wid, ws] of Object.entries(d.workers||{})){
       rs += '<tr>';
-      rs += w ? `<td><span class="${w[1].alive?'alive':'dead'}">&#x25cf;</span> ${w[0]}</td><td style="color:#5af">@${w[1].host||'?'}</td><td style="color:#6a8a9e">${w[1].last_seen_sec}s</td>` : '<td colspan=3></td>';
-      rs += `<td>${crawlsByQ[qn]||''}</td>`;
-      rs += `<td>${qn}</td><td style="color:#fa0">${qv.pending||0}</td><td style="color:#e55">${qv.retry||0}</td><td style="color:#e55">${qv.dead||0}</td>`;
+      rs += `<td><span class="${ws.alive?'alive':'dead'}">&#x25cf;</span> ${wid}</td>`;
+      rs += `<td style="color:#5af">@${ws.host||'?'}</td>`;
+      rs += `<td style="color:#6a8a9e">${ws.last_seen_sec}s</td>`;
+      rs += `<td style="color:#fa0">${ws.activity||'空闲'}</td>`;
       rs += '</tr>';
     }
-    document.getElementById('run-status').innerHTML = rs;
+    if(!Object.keys(d.workers||{}).length) rs += '<tr><td colspan=4>无 Worker</td></tr>';
+    document.getElementById('run-status').innerHTML = rs + '<tr><td colspan=4></td></tr>';
+
+    // ===== 队列表 (独立) =====
+    document.getElementById('queues-table').innerHTML = (function(){
+      let h = '<tr><th>队列</th><th>待处理</th><th>处理中</th><th>重试</th><th>死信</th></tr>';
+      for(const [q, v] of Object.entries(d.queues||{})){
+        h += `<tr><td>${q}</td><td style="color:#fa0">${v.pending||0}</td><td>${v.processing||0}</td><td style="color:#e55">${v.retry||0}</td><td style="color:#e55">${v.dead||0}</td></tr>`;
+      }
+      return h;
+    })();
 
     // task_meta 概况
     const tm = d.task_meta;
