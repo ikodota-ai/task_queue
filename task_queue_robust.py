@@ -306,7 +306,10 @@ class Worker:
     def __init__(self, task_queue: TaskQueue, queue_names: List[str], worker_id: str = None):
         self.task_queue = task_queue
         self.queue_names = queue_names
-        self.worker_id = worker_id or f"worker-{uuid.uuid4().hex[:8]}"
+        if not worker_id:
+            worker_id = f"worker-{uuid.uuid4().hex[:8]}"
+        # 加随机后缀确保同机器多实例不覆盖
+        self.worker_id = f"{worker_id}-{uuid.uuid4().hex[:4]}"
         self.running = False
         self.tasks_processed = 0
         self.logger = logging.getLogger(f"Worker-{self.worker_id}")
