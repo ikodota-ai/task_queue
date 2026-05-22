@@ -330,20 +330,22 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
 
 
 
-<!-- 左右布局 -->
-<div class="row" style="gap:12px">
-  <div style="flex:3;min-width:0">
-    <div class="row" id="overview" style="margin-bottom:6px"></div>
-    <h2>&#x25b6; 抓取 Worker</h2>
-    <table id="crawl-table"></table>
-    <h2>&#x21e9; 下载 Worker</h2>
-    <table id="dl-table"></table>
-  </div>
+<!-- 总览 + 队列 并排 -->
+<div class="row" style="gap:12px;margin-bottom:6px">
+  <div style="flex:3" class="row" id="overview"></div>
   <div style="flex:1;min-width:240px">
     <h2>&#x2630; 队列</h2>
     <table id="queues-table"></table>
   </div>
 </div>
+
+<!-- 抓取 Worker -->
+<h2>&#x25b6; 抓取 Worker</h2>
+<table id="crawl-table"></table>
+
+<!-- 下载 Worker -->
+<h2>&#x21e9; 下载 Worker</h2>
+<table id="dl-table"></table>
 
 <!-- 下载 -->
 <div style="margin-top:6px">
