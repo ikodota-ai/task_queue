@@ -411,10 +411,10 @@ async function refresh(){
     }
     document.getElementById('active-now').innerHTML = now;
     // 活跃抓取表格
-    let at = '<tr><th>队列</th><th>用户</th></tr>';
+    let at2 = '<tr><th>队列</th><th>用户</th></tr>';
     for(const c of d.active_crawls||[])
-      at += `<tr><td>${c.queue}</td><td>@${c.user_id}</td></tr>`;
-    document.getElementById('active-table').innerHTML = at || '';
+      at2 += `<tr><td>${c.queue}</td><td>@${c.user_id}</td></tr>`;
+    document.getElementById('active-table').innerHTML = at2 || '';
 
     // ===== 队列表 =====
     let qh = '<tr><th>队列</th><th>待处理</th><th>处理中</th><th>重试</th><th>死信</th></tr>';
