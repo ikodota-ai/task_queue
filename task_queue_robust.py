@@ -289,10 +289,17 @@ class TaskQueue:
         elapsed = ""
         tid = ""
         if _current_task:
-            args = _current_task.args
-            user = str(args[0]) if args else "?"
             qname = _current_task.queue_name
-            task_info = f"{qname}:{user}"
+            # 抓取任务：队列:用户；下载任务：plat:star_id:user
+            if "dl:" in qname:
+                a = _current_task.args
+                plat = str(a[3]) if len(a) > 3 else "?"
+                usr = str(a[4]) if len(a) > 4 else "?"
+                import re
+                m = re.search(r'/image/(\d+)/', str(a[1]) if len(a) > 1 else "")
+                task_info = f"{plat}:{m.group(1) if m else '?'}:{usr}"
+            else:
+                task_info = f"{qname}:{str(_current_task.args[0]) if _current_task.args else '?'}"
             elapsed = str(int(time.time() - _current_task.enqueued_at))
             tid = _current_task.task_id[:8]
         else:
