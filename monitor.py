@@ -270,7 +270,7 @@ def api_status():
         if results[i] != "done":
             continue
         tid = k.rsplit(":", 1)[-1][:8]
-        q = ":".join(k.split(":")[1:3])
+        q = ":".join(k.split(":")[1:4])
         args_str = qr.hget(k, "args") or ""
         user_id = "?"
         try:
@@ -279,7 +279,7 @@ def api_status():
         except Exception:
             user_id = "auto"  # 自动入队任务无 args
         completed_crawls.append({"queue": q, "user_id": user_id, "task_id": tid})
-    completed_crawls = completed_crawls[-10:][::-1]
+    completed_crawls = completed_crawls[-6:][::-1]
 
     return jsonify({
         "task_stats": task_stats,
