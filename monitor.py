@@ -383,19 +383,16 @@ async function refresh(){
     const d = await r.json();
     const S = {pending:'yellow', queued:'blue', processing:'blue', done:'green', failed:'red', skipped:'white'};
 
-    // ===== 顶部：工作量 + 进度 =====
-    const labels = {today:'今日', yesterday:'昨日', week:'本周', month:'本月'};
+    // ===== 顶部：今日 + 昨日 =====
     let ov = '';
     for(const [plat, color] of [['ig','#e4405f'],['x','#1da1f2']]){
-      const stat = d.today_stats?.[plat] || {};
-      const full = stat.full || {}, incr = stat.incr || {};
+      const today = d.work?.today?.[plat] || {};
+      const yesterday = d.work?.yesterday?.[plat] || {};
       ov += `<div class="card" style="border-top:3px solid ${color}">`;
       ov += `<div class="l">${plat.toUpperCase()}</div>`;
-      ov += `<table style="margin-top:2px"><tr><th></th><th>人</th><th>图</th><th>全量</th><th>增量</th></tr>`;
-      for(const [k, lb] of Object.entries(labels)){
-        const w = d.work?.[k]?.[plat] || {};
-        ov += `<tr><td>${lb}</td><td style="color:#5af">${w.users||0}</td><td style="color:#fa0">${w.images||0}</td><td style="color:#5e5">${k==='today'?full.done||0:'-'}</td><td style="color:#5e5">${k==='today'?incr.done||0:'-'}</td></tr>`;
-      }
+      ov += `<table style="margin-top:2px"><tr><th></th><th>人</th><th>图</th></tr>`;
+      ov += `<tr><td>今日</td><td style="color:#5af">${today.users||0}</td><td style="color:#fa0">${today.images||0}</td></tr>`;
+      ov += `<tr><td>昨日</td><td style="color:#5af">${yesterday.users||0}</td><td style="color:#fa0">${yesterday.images||0}</td></tr>`;
       ov += `</table></div>`;
     }
     document.getElementById('overview').innerHTML = ov;
