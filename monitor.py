@@ -209,9 +209,9 @@ def api_status():
                 user_id = "?"
                 try:
                     a = eval(args_list[j] or "[]")
-                    user_id = a[0] if a else "?"
+                    user_id = str(a[0]) if a else "?"
                 except Exception:
-                    pass
+                    user_id = "?"
                 active_crawls.append({
                     "queue": q,
                     "user_id": user_id,
@@ -275,9 +275,9 @@ def api_status():
         user_id = "?"
         try:
             a = eval(args_str)
-            user_id = a[0] if a else "?"
+            user_id = str(a[0]) if a else "?"
         except Exception:
-            pass
+            user_id = "auto"  # 自动入队任务无 args
         completed_crawls.append({"queue": q, "user_id": user_id, "task_id": tid})
     completed_crawls = completed_crawls[-10:][::-1]
 
@@ -330,10 +330,14 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
 
 
 
-<!-- 总览 + 队列 并排 -->
-<div class="row" style="gap:12px;margin-bottom:6px">
-  <div style="flex:3" class="row" id="overview"></div>
-  <div style="flex:1;min-width:240px">
+<!-- 总览 + 最近完成 + 队列 并排 -->
+<div class="row" style="gap:10px;margin-bottom:6px">
+  <div style="flex:2;min-width:0" id="overview" class="row"></div>
+  <div style="flex:2;min-width:0">
+    <h2>&#x1f4c4; 最近完成</h2>
+    <table id="recent"></table>
+  </div>
+  <div style="flex:1;min-width:220px">
     <h2>&#x2630; 队列</h2>
     <table id="queues-table"></table>
   </div>
@@ -371,10 +375,6 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
     </form>
   </div>
 </div>
-
-<!-- 最近任务 -->
-<h2>&#x1f4c4; 最近完成</h2>
-<table id="recent"></table>
 
 <script>
 async function refresh(){
