@@ -190,9 +190,11 @@ def api_status():
         activity = parts[2] if len(parts) > 2 else ""
         elapsed = parts[3] if len(parts) > 3 else ""
         queue = parts[4] if len(parts) > 4 else ""
+        tid = parts[5] if len(parts) > 5 else ""
         age = int(time.time() - ts)
         workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host,
-                        "activity": activity, "elapsed": elapsed, "queue": queue}
+                        "activity": activity, "elapsed": elapsed, "queue": queue,
+                        "tid": tid}
 
     # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
     active_crawls = []
@@ -419,14 +421,15 @@ async function refresh(){
         h += `<td style="color:#5af">@${ws.host||'?'}</td>`;
         h += `<td><span class="${alive}">&#x25cf;</span> ${wid}</td>`;
         h += `<td style="color:#fa0">${ws.activity||'空闲'}</td>`;
+        h += `<td style="color:#6a8a9e">${ws.tid||'-'}</td>`;
         h += `<td style="color:#6a8a9e">${ws.elapsed ? ws.elapsed+'s' : '-'}</td>`;
         h += '</tr>';
       }
-      if(!list.length) h += '<tr><td colspan=5>无</td></tr>';
+      if(!list.length) h += '<tr><td colspan=6>无</td></tr>';
       document.getElementById(elemId).innerHTML = h;
     };
-    renderW(crawlW, ['队列','机器','Worker','状态','耗时'], 'crawl-table');
-    renderW(subW, ['队列','机器','Worker','状态','耗时'], 'dl-table');
+    renderW(crawlW, ['队列','机器','Worker','状态','任务ID','耗时'], 'crawl-table');
+    renderW(subW, ['队列','机器','Worker','状态','任务ID','耗时'], 'dl-table');
 
     // ===== 队列表 (独立) =====
     document.getElementById('queues-table').innerHTML = (function(){
