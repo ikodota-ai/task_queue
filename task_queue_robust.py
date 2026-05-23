@@ -330,14 +330,30 @@ class Worker:
     def start(self):
         self.running = True
         self.logger.info(f"Worker {self.worker_id} started, listening to queues: {self.queue_names}")
-        # 启动心跳线程
         import threading
+
         def heartbeat_loop():
             while self.running:
                 self.task_queue.worker_heartbeat(self.worker_id)
                 time.sleep(WORKER_HEARTBEAT_INTERVAL)
         heart_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heart_thread.start()
+
+        # 键盘监听（Windows Ctrl+C 不可靠时按任意键退出）
+        def key_listener():
+            try:
+                import msvcrt  # Windows
+                while self.running:
+                    if msvcrt.kbhit():
+                        ch = msvcrt.getch()
+                        if ch in (b'\x03', b'\x1a'):  # Ctrl+C / Ctrl+Z
+                            self.logger.info("Keyboard interrupt, stopping...")
+                            self.running = False
+                            break
+                    time.sleep(0.5)
+            except ImportError:
+                pass  # Linux — signals 够用
+        threading.Thread(target=key_listener, daemon=True).start()
 
         while self.running:
             for qname in self.queue_names:
