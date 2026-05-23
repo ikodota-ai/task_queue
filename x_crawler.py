@@ -569,9 +569,14 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
         logger.info(f"Scroll {scroll_idx+1}: {len(links)} tweet links on page")
 
         new_found = 0
+        link_idx = 0
 
-        for link in links:
-            href = link.get_attribute("href")
+        while link_idx < len(links):
+            try:
+                href = links[link_idx].get_attribute("href")
+            except Exception:
+                link_idx += 1
+                continue
             if not href:
                 continue
             clean = href.split("?")[0]
@@ -603,7 +608,10 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
-                break  # 弹窗关闭后 link 失效，跳出重新获取
+                links = driver.find_elements(
+                    By.XPATH, "//section[@role='region']//li[@role='listitem']//a")
+                link_idx = 0
+                continue
 
             # ---- 写入 DB + 发下载子任务 ----
             for idx, img_url in enumerate(image_urls, 1):
@@ -643,7 +651,9 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                     since_cursor_save = 0
 
             time.sleep(0.5)
-            break  # 弹窗关闭后 link 失效，跳出重新获取
+            links = driver.find_elements(
+                By.XPATH, "//section[@role='region']//li[@role='listitem']//a")
+            link_idx = 0
 
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")
