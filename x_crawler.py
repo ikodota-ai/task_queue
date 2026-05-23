@@ -597,16 +597,12 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
             # ---- 提取图片 ----
             image_urls: List[str] = []
-            dom_changed = False
 
-            # 点开弹窗取所有图
+            # 点开弹窗取所有图（X 弹窗不跳转，link 不失效）
             image_urls = _extract_carousel_images(driver, link)
-            dom_changed = True  # 弹窗操作后 DOM 可能变化
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
-                if dom_changed:
-                    break  # DOM 变化，跳出重新获取链接
                 continue
 
             # ---- 写入 DB + 发下载子任务 ----
@@ -647,8 +643,6 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
                     since_cursor_save = 0
 
             time.sleep(0.5)
-            if dom_changed:
-                break  # DOM 变化，下轮 scroll 重新获取链接
 
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")
