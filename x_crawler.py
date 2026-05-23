@@ -403,8 +403,11 @@ def _extract_carousel_images(driver, link) -> List[str]:
     except Exception:
         return []
     time.sleep(2)
-    # 提取 + 翻页 + 关闭交给 _extract_images_from_tweet
-    return _extract_images_from_tweet(driver)
+    images = _extract_images_from_tweet(driver)
+    if not images:
+        # 即使没图也要关弹窗
+        _close_modal(driver)
+    return images
 
 
 def _extract_images_from_tweet(driver) -> List[str]:
@@ -456,7 +459,12 @@ def _extract_images_from_tweet(driver) -> List[str]:
             if no_new_streak >= 3:
                 break
 
-    # 关闭弹窗
+    _close_modal(driver)
+    return images
+
+
+def _close_modal(driver):
+    """关闭 X 弹窗，回到列表页"""
     for xp in (
         "//div[@aria-roledescription='carousel']//button[@aria-label='close']",
         "//button[@aria-label='close']",
@@ -473,8 +481,6 @@ def _extract_images_from_tweet(driver) -> List[str]:
         except:
             pass
     time.sleep(1)
-
-    return images
 
 
 def _close_dialog(driver):
