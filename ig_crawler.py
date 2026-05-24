@@ -227,10 +227,16 @@ def _start_heartbeat(interval=120):
             if task is None:
                 continue
             try:
-                r = _queue_redis()
+                r = redis_module.Redis(
+                    host=cfg["queue_redis_host"], port=cfg["queue_redis_port"],
+                    password=cfg["queue_redis_password"], db=cfg["queue_redis_db"],
+                    decode_responses=True, socket_keepalive=True,
+                    socket_connect_timeout=5, socket_timeout=5,
+                )
                 r.hset(f"processing:{task.queue_name}", task.task_id, str(time.time() + 600))
-            except Exception:
-                pass
+                r.close()
+            except Exception as e:
+                logger.warning(f"Heartbeat extend failed: {e}")
     threading.Thread(target=_beat, daemon=True).start()
 
 # -----------------------------------------------------------
