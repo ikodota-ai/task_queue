@@ -663,9 +663,6 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
             if incremental and no_new >= 5:
                 logger.info("No new tweets for 5 scrolls, boundary reached")
                 break
-            if not incremental and no_new >= 20:
-                logger.info("No new tweets for 20 scrolls, stopping")
-                break
 
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)

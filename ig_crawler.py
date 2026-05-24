@@ -794,10 +794,6 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
             if incremental and no_new >= 5:
                 logger.info("No new posts for 5 scrolls, boundary reached")
                 break
-            # 全量模式：连滚 20 次无新帖 = 到底了
-            if not incremental and no_new >= 20:
-                logger.info("No new posts for 20 scrolls, stopping")
-                break
         # 滚动
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
