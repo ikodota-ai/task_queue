@@ -561,6 +561,20 @@ def _close_dialog(driver):
 def _crawl_user(user_id: str, incremental: bool = False) -> int:
     _start_heartbeat()
 
+    # 并发锁
+    lock_key = f"x:{user_id}:crawling"
+    if not _state_redis().set(lock_key, "1", nx=True, ex=7200):
+        logger.warning(f"{user_id} is already being crawled by another worker, skipping")
+        return 0
+
+    try:
+        return _do_crawl(user_id, incremental)
+    finally:
+        _state_redis().delete(lock_key)
+
+
+def _do_crawl(user_id: str, incremental: bool = False) -> int:
+
     # 全量已完成检查：full_done=1 表示之前已滚到底，跳过
     if not incremental:
         full_done = _state_redis().hget(_skey(user_id), "full_done")

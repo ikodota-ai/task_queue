@@ -665,6 +665,20 @@ def _navigate_to_user(driver, user_id, retries=3) -> bool:
 def _crawl_user(user_id: str, incremental: bool = False, max_images: int = None) -> int:
     _start_heartbeat()
 
+    # 并发锁：同一用户同时只允许一个 Worker 抓取
+    lock_key = f"ig:{user_id}:crawling"
+    if not _state_redis().set(lock_key, "1", nx=True, ex=7200):  # 2h TTL
+        logger.warning(f"{user_id} is already being crawled by another worker, skipping")
+        return 0
+
+    try:
+        return _do_crawl(user_id, incremental, max_images)
+    finally:
+        _state_redis().delete(lock_key)
+
+
+def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -> int:
+
     # 全量/max1000 已完成检查
     if not incremental:
         state = _state_redis().hgetall(_skey(user_id))
