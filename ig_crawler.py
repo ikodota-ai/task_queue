@@ -181,9 +181,19 @@ _driver = None
 _driver_lock = threading.Lock()
 
 def _get_driver():
-    """获取或创建 Chrome 实例（已登录）"""
+    """获取或创建 Chrome 实例（已登录），崩溃后自动重建"""
     global _driver
     with _driver_lock:
+        if _driver is not None:
+            try:
+                _driver.current_url  # 探测连接是否存活
+            except Exception:
+                logger.warning("Chrome connection lost, recreating driver")
+                try:
+                    _driver.quit()
+                except Exception:
+                    pass
+                _driver = None
         if _driver is None:
             _driver = _setup_chrome()
             try:
@@ -197,7 +207,8 @@ def _get_driver():
                 raise
     return _driver
 
-def _close_driver():
+def _reset_driver():
+    """强制重置 driver（Chrome 崩溃后调用）"""
     global _driver
     with _driver_lock:
         if _driver:
@@ -206,6 +217,9 @@ def _close_driver():
             except Exception:
                 pass
             _driver = None
+
+def _close_driver():
+    _reset_driver()
 
 
 # -----------------------------------------------------------
@@ -639,7 +653,11 @@ def _crawl_user(user_id: str, incremental: bool = False, max_images: int = None)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
             logger.info(f"Full crawl for {user_id}: no cursor, will skip processed posts")
 
-    driver = _get_driver()
+    try:
+        driver = _get_driver()
+    except Exception:
+        _reset_driver()
+        raise
     processed = 0
 
     if not _navigate_to_user(driver, user_id):

@@ -183,6 +183,16 @@ _driver_lock = threading.Lock()
 def _get_driver():
     global _driver
     with _driver_lock:
+        if _driver is not None:
+            try:
+                _driver.current_url
+            except Exception:
+                logger.warning("Chrome connection lost, recreating driver")
+                try:
+                    _driver.quit()
+                except Exception:
+                    pass
+                _driver = None
         if _driver is None:
             _driver = _setup_chrome()
             _ensure_login(_driver)
