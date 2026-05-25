@@ -725,6 +725,11 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
 
     if processed:
         _update_state(user_id, last_scrape_time=time.time())
+    if incremental and processed >= 0:
+        r = _state_redis()
+        cnt = r.hincrby(_skey(user_id), "incr_count", 1)
+        r.hset(_skey(user_id), "incr_last_time", str(int(time.time())))
+        logger.info(f"Incremental #{cnt} done for {user_id}")
     elif cursor_url and not incremental:
         _state_redis().hdel(_skey(user_id), "cursor_url")
         logger.info(f"All tweets already processed, cursor cleared for {user_id}")

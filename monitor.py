@@ -147,6 +147,21 @@ def api_status():
         for row in cur.fetchall():
             work_periods[key][row["platform"]] = {"users": row["users"] or 0, "images": row["images"] or 0}
 
+    # ===== 全量/增量覆盖统计 =====
+    sr = _get_state_redis()
+    full_done_cnt = {"ig": 0, "x": 0}
+    incr_24h = {"ig": 0, "x": 0}
+    now_ts = int(time.time())
+    for plat, prefix in [("ig", "instagram:"), ("x", "twitter:")]:
+        for k in sr.keys(f"{prefix}*:state"):
+            data = sr.hgetall(k)
+            if data.get("full_done") == "1":
+                full_done_cnt[plat] += 1
+            last = int(data.get("incr_last_time", 0))
+            if last > now_ts - 86400:
+                incr_24h[plat] += 1
+    coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
+
     db.close()
 
     # ===== task_meta 概况 (一次 keys 分类) =====
@@ -294,6 +309,7 @@ def api_status():
         "active_downloads": active_downloads,
         "active_crawls": active_crawls,
         "completed_crawls": completed_crawls,
+        "coverage": coverage,
         "dl_pending": sum(q["pending"] for q in queues.values() if q["pending"]),
         "task_meta": {"total": tm_total, "by_type": tm_by_q},
         "ts": int(time.time()),
@@ -385,16 +401,19 @@ async function refresh(){
     const d = await r.json();
     const S = {pending:'yellow', queued:'blue', processing:'blue', done:'green', failed:'red', skipped:'white'};
 
-    // ===== 顶部：今日 + 昨日 =====
+    // ===== 顶部：今日 + 昨日 + 覆盖 =====
     let ov = '';
     for(const [plat, color] of [['ig','#e4405f'],['x','#1da1f2']]){
       const today = d.work?.today?.[plat] || {};
       const yesterday = d.work?.yesterday?.[plat] || {};
+      const cov = d.coverage || {};
       ov += `<div class="card" style="border-top:3px solid ${color}">`;
       ov += `<div class="l">${plat.toUpperCase()}</div>`;
       ov += `<table style="margin-top:2px"><tr><th></th><th>人</th><th>图</th></tr>`;
       ov += `<tr><td>今日</td><td style="color:#5af">${today.users||0}</td><td style="color:#fa0">${today.images||0}</td></tr>`;
       ov += `<tr><td>昨日</td><td style="color:#5af">${yesterday.users||0}</td><td style="color:#fa0">${yesterday.images||0}</td></tr>`;
+      ov += `<tr><td>全量完成</td><td style="color:#5e5" colspan=2>${cov.full_done?.[plat]||0} 人</td></tr>`;
+      ov += `<tr><td>24h增量</td><td style="color:#fa0" colspan=2>${cov.incr_24h?.[plat]||0} 人</td></tr>`;
       ov += `</table></div>`;
     }
     document.getElementById('overview').innerHTML = ov;
