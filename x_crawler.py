@@ -203,6 +203,12 @@ def _close_driver():
     with _driver_lock:
         if _driver:
             try:
+                import glob as _glob, shutil as _shutil
+                for d in _glob.glob("/tmp/chrome_x_*"):
+                    _shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+            try:
                 _driver.quit()
             except Exception:
                 pass
@@ -249,6 +255,14 @@ def _setup_chrome(headless=False):
     cdp = cfg["ig_chromedriver_path"]
     if not cp or not cdp:
         raise RuntimeError("IG_CHROME_PATH and IG_CHROMEDRIVER_PATH must be set")
+
+    import glob as _glob, shutil as _shutil
+    for old in _glob.glob("/tmp/chrome_x_*") + _glob.glob("/tmp/chrome_ig_*"):
+        try:
+            if time.time() - os.path.getmtime(old) > 86400:
+                _shutil.rmtree(old, ignore_errors=True)
+        except Exception:
+            pass
 
     opt = Options()
     opt.binary_location = cp
