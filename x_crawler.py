@@ -259,8 +259,14 @@ def _setup_chrome(headless=False):
     import glob as _glob, shutil as _shutil
     for old in _glob.glob("/tmp/chrome_x_*") + _glob.glob("/tmp/chrome_ig_*"):
         try:
-            if time.time() - os.path.getmtime(old) > 86400:
-                _shutil.rmtree(old, ignore_errors=True)
+            parts = os.path.basename(old).split("_")
+            pid = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+            if pid and os.kill(pid, 0):
+                continue
+        except (OSError, ValueError, IndexError):
+            pass
+        try:
+            _shutil.rmtree(old, ignore_errors=True)
         except Exception:
             pass
 

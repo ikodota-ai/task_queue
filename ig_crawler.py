@@ -270,12 +270,18 @@ def _setup_chrome(headless=False):
     if not cp or not cdp:
         raise RuntimeError("IG_CHROME_PATH and IG_CHROMEDRIVER_PATH must be set")
 
-    # 清理 24 小时前的旧 Chrome 临时目录
+    # 清理已停止的 Chrome 临时目录（含 PID，检查进程是否存活）
     import glob as _glob, shutil as _shutil
     for old in _glob.glob("/tmp/chrome_ig_*") + _glob.glob("/tmp/chrome_x_*"):
         try:
-            if time.time() - os.path.getmtime(old) > 86400:
-                _shutil.rmtree(old, ignore_errors=True)
+            parts = os.path.basename(old).split("_")
+            pid = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+            if pid and os.kill(pid, 0):
+                continue  # 进程存活，跳过
+        except (OSError, ValueError, IndexError):
+            pass  # 进程不存在或无 PID → 清理
+        try:
+            _shutil.rmtree(old, ignore_errors=True)
         except Exception:
             pass
 
