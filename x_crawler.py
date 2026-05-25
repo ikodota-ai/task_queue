@@ -527,8 +527,12 @@ def _close_dialog(driver):
 def _crawl_user(user_id: str, incremental: bool = False) -> int:
     _start_heartbeat()
 
-    # 全量已完成检查：无游标 + 有已处理 → 上次跑完但不跳过
+    # 全量已完成检查：full_done=1 表示之前已滚到底，跳过
     if not incremental:
+        full_done = _state_redis().hget(_skey(user_id), "full_done")
+        if full_done == "1":
+            logger.info(f"Full crawl for {user_id} already completed (full_done=1), skipping")
+            return 0
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
             logger.info(f"Full crawl for {user_id}: no cursor, will skip already-processed posts")
@@ -677,7 +681,9 @@ def _crawl_user(user_id: str, incremental: bool = False) -> int:
         if new_h == prev_height:
             same_height += 1
             if same_height >= 10:
-                logger.info("Page height not growing, stopping")
+                logger.info("Page height not growing, reached bottom")
+                if not incremental:
+                    _state_redis().hset(_skey(user_id), "full_done", "1")
                 break
         else:
             same_height = 0
