@@ -264,6 +264,10 @@ def _setup_chrome(headless=False):
     if headless or os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
         opt.add_argument("--headless=new")
         opt.add_argument("--disable-gpu")
+        opt.add_argument("--no-zygote")
+        opt.add_argument("--disable-features=VizDisplayCompositor,TranslateUI")
+        opt.add_argument("--no-first-run")
+        opt.add_argument("--disable-default-apps")
     opt.add_argument(f"--user-data-dir=/tmp/chrome_ig_{os.getpid()}_{int(time.time())}")
 
     driver = webdriver.Chrome(service=Service(executable_path=cdp), options=opt)
