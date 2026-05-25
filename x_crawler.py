@@ -255,7 +255,7 @@ def _setup_chrome(headless=False):
     if headless or os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
         opt.add_argument("--headless=new")
         opt.add_argument("--disable-gpu")
-    opt.add_argument(f"--user-data-dir=/tmp/chrome_x_{int(time.time())}")
+    opt.add_argument(f"--user-data-dir=/tmp/chrome_x_{os.getpid()}_{int(time.time())}")
 
     driver = webdriver.Chrome(service=Service(executable_path=cdp), options=opt)
     driver.execute_script(
