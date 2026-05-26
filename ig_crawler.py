@@ -515,16 +515,18 @@ def _extract_from_dialog(driver) -> List[str]:
     seen = set()
 
     img = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
-    if img:
+    img_url = None
+    for attempt in range(3):
         try:
-            img_url = img[0].get_attribute("src")
+            imgs = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
+            if imgs:
+                img_url = imgs[0].get_attribute("src")
+            break
         except Exception:
             time.sleep(0.5)
-            img = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
-            img_url = img[0].get_attribute("src") if img else None
-        if img_url and "s150x150" not in img_url and "profile" not in img_url:
-            seen.add(img_url)
-            images.append(img_url)
+    if img_url and "s150x150" not in img_url and "profile" not in img_url:
+        seen.add(img_url)
+        images.append(img_url)
     logger.info(f"Carousel opened, initial images: {len(images)}")
     time.sleep(2)
     while True:
