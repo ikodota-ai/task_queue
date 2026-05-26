@@ -516,7 +516,12 @@ def _extract_from_dialog(driver) -> List[str]:
 
     img = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
     if img:
-        img_url = img[0].get_attribute("src")
+        try:
+            img_url = img[0].get_attribute("src")
+        except Exception:
+            time.sleep(0.5)
+            img = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
+            img_url = img[0].get_attribute("src") if img else None
         if img_url and "s150x150" not in img_url and "profile" not in img_url:
             seen.add(img_url)
             images.append(img_url)
