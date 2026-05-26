@@ -933,8 +933,13 @@ def ig_full_crawl(user_id: str, db_task_id: int = None) -> str:
             db_task_id = cur.lastrowid
         except Exception:
             pass
-        tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
-        logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
+        # 只有真正滚到底才自动投增量
+        state = _state_redis().hgetall(_skey(user_id))
+        if state.get("full_done") == "1" or state.get("max1000_done") == "1":
+            tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
+            logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
+        else:
+            logger.info(f"Full crawl for {user_id} did not reach bottom, skipping incr")
         return result
     except Exception:
         if db_task_id:
@@ -949,9 +954,13 @@ def ig_max1000_crawl(user_id: str, db_task_id: int = None) -> str:
         count = _crawl_user(user_id, incremental=False, max_images=1000)
         if db_task_id:
             _update_crawl_status(db_task_id, "done", count)
-        tq = TaskQueue()
-        tq.redis = _queue_redis()
-        tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
+        # 只有真正达到上限才自动投增量
+        state = _state_redis().hgetall(_skey(user_id))
+        if state.get("max1000_done") == "1":
+            tq = TaskQueue()
+            tq.redis = _queue_redis()
+            tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
+        logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
         return f"max1000 crawl: {count} images"
     except Exception:
         if db_task_id:
