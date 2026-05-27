@@ -687,10 +687,13 @@ def _crawl_user(user_id: str, incremental: bool = False, max_images: int = None)
 def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -> int:
 
     # 全量/max1000 已完成检查
+    if max_images and state.get("max1000_done") == "1":
+        logger.info(f"max{max_images} crawl for {user_id} already done, skipping")
+        return 0
     if not incremental:
         state = _state_redis().hgetall(_skey(user_id))
-        if state.get("full_done") == "1" or state.get("max1000_done") == "1":
-            logger.info(f"Full crawl for {user_id} already completed ({state}), skipping")
+        if state.get("full_done") == "1":
+            logger.info(f"Full crawl for {user_id} already completed (full_done=1), skipping")
             return 0
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
