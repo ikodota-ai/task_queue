@@ -558,7 +558,7 @@ def _close_dialog(driver):
 # 核心：收集推文 URL + 进入详情页提取图片
 # -----------------------------------------------------------
 
-def _crawl_user(user_id: str, incremental: bool = False, max_images: int = None) -> int:
+def _crawl_user(user_id: str, incremental: bool = False, maxpage: int = 500) -> int:
     _start_heartbeat()
 
     lock_key = f"x:{user_id}:crawling"
@@ -567,17 +567,14 @@ def _crawl_user(user_id: str, incremental: bool = False, max_images: int = None)
         return 0
 
     try:
-        return _do_crawl(user_id, incremental, max_images)
+        return _do_crawl(user_id, incremental, maxpage)
     finally:
         _state_redis().delete(lock_key)
 
 
-def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -> int:
+def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> int:
 
-    # 全量/max1000 已完成检查
-    if max_images and _state_redis().hget(_skey(user_id), "max1000_done") == "1":
-        logger.info(f"max{max_images} crawl for {user_id} already done, skipping")
-        return 0
+    # 全量已完成检查：full_done=1 或已抓页数 >= 目标 maxpage
     if not incremental:
         full_done = _state_redis().hget(_skey(user_id), "full_done")
         maxpage = int(_state_redis().hget(_skey(user_id), "maxpage") or 0)
@@ -622,7 +619,7 @@ def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -
     prev_height = 0
     since_cursor_save = 0
 
-    for scroll_idx in range(500):
+    for scroll_idx in range(maxpage):
         links = driver.find_elements(
             By.XPATH,
             "//section[@role='region']//li[@role='listitem']//a",
@@ -733,16 +730,22 @@ def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -
             same_height += 1
             if same_height >= 10:
                 logger.info("Page height not growing, reached bottom")
-                if not incremental:
-                    _state_redis().hset(_skey(user_id), "full_done", "1")
                 break
         else:
             same_height = 0
         prev_height = new_h
 
-    if max_images and processed >= max_images:
-        _state_redis().hset(_skey(user_id), "max1000_done", "1")
-        logger.info(f"Reached {max_images} images, marked max1000_done=1")
+    # 标记实际翻页数
+    actual_pages = scroll_idx + 1
+    _state_redis().hset(_skey(user_id), "maxpage", str(actual_pages))
+    if same_height >= 10:
+        logger.info(f"Reached bottom at page {actual_pages}")
+        if not incremental:
+            _state_redis().hset(_skey(user_id), "full_done", "1")
+    else:
+        logger.info(f"Reached maxpage limit ({maxpage} pages)")
+        if not incremental:
+            _state_redis().hset(_skey(user_id), "full_done", "1")
 
     if processed:
         _update_state(user_id, last_scrape_time=time.time())

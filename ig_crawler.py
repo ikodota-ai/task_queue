@@ -669,7 +669,7 @@ def _navigate_to_user(driver, user_id, retries=3) -> bool:
     return False
 
 
-def _crawl_user(user_id: str, incremental: bool = False, maxpage: int = 500, max_images: int = None) -> int:
+def _crawl_user(user_id: str, incremental: bool = False, maxpage: int = 500) -> int:
     _start_heartbeat()
 
     lock_key = f"ig:{user_id}:crawling"
@@ -678,19 +678,15 @@ def _crawl_user(user_id: str, incremental: bool = False, maxpage: int = 500, max
         return 0
 
     try:
-        return _do_crawl(user_id, incremental, maxpage, max_images)
+        return _do_crawl(user_id, incremental, maxpage)
     finally:
         _state_redis().delete(lock_key)
 
 
-def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500, max_images: int = None) -> int:
+def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> int:
 
     state = _state_redis().hgetall(_skey(user_id))
 
-    # max1000 已完成检查
-    if max_images and state.get("max1000_done") == "1":
-        logger.info(f"max{max_images} crawl for {user_id} already done, skipping")
-        return 0
     # 全量已完成检查：full_done=1 或已抓页数 >= 目标 maxpage
     if not incremental:
         saved_maxpage = int(state.get("maxpage", 0))
@@ -882,9 +878,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500, max_i
             same_height += 1
             if same_height >= 10:
                 logger.info("Page height not growing, reached bottom")
-                # 标记全量已完成
-                if not incremental:
-                    _state_redis().hset(_skey(user_id), "full_done", "1")
                 break
         else:
             same_height = 0
@@ -901,10 +894,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500, max_i
         logger.info(f"Reached maxpage limit ({maxpage} pages)")
         if not incremental:
             _state_redis().hset(_skey(user_id), "full_done", "1")
-
-    if max_images and processed >= max_images:
-        _state_redis().hset(_skey(user_id), "max1000_done", "1")
-        logger.info(f"Reached {max_images} images, marked max1000_done=1")
 
     if processed:
         _update_state(user_id, last_scrape_time=time.time())
@@ -951,7 +940,7 @@ def ig_full_crawl(user_id: str, db_task_id: int = None) -> str:
             pass
         # 只有真正滚到底才自动投增量
         state = _state_redis().hgetall(_skey(user_id))
-        if state.get("full_done") == "1" or state.get("max1000_done") == "1":
+        if state.get("full_done") == "1":
             tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
             logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
         else:
