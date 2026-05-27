@@ -578,8 +578,8 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     if not incremental:
         full_done = _state_redis().hget(_skey(user_id), "full_done")
         saved = int(_state_redis().hget(_skey(user_id), "maxpage") or 0)
-        if full_done == "1" and saved >= maxpage:
-            logger.info(f"Full crawl for {user_id} already done (full_done=1, maxpage={saved}/{maxpage})")
+        if full_done == "1":
+            logger.info(f"Full crawl for {user_id} already completed (full_done=1), skipping")
             return 0
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
