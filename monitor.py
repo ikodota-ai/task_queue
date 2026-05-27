@@ -168,139 +168,139 @@ def api_status():
                 if last > now_ts - 86400:
                     incr_24h[plat] += 1
         coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
-    # ===== task_meta 概况 (一次 keys 分类) =====
-    tm_total = 0
-    tm_by_q = {"dl:ig": 0, "dl:x": 0, "crawl": 0}
-    for k in qr.keys("task_meta:*"):
-        tm_total += 1
-        if ":dl:ig:" in k: tm_by_q["dl:ig"] += 1
-        elif ":dl:x:" in k: tm_by_q["dl:x"] += 1
-        elif ":crawl:" in k: tm_by_q["crawl"] += 1
+        # ===== task_meta 概况 (一次 keys 分类) =====
+        tm_total = 0
+        tm_by_q = {"dl:ig": 0, "dl:x": 0, "crawl": 0}
+        for k in qr.keys("task_meta:*"):
+            tm_total += 1
+            if ":dl:ig:" in k: tm_by_q["dl:ig"] += 1
+            elif ":dl:x:" in k: tm_by_q["dl:x"] += 1
+            elif ":crawl:" in k: tm_by_q["crawl"] += 1
 
-    # ===== Redis — 用 pipeline 批量查 =====
-    pipe = qr.pipeline()
-    for q in ["crawl:ig:full", "crawl:ig:incr",
-              "crawl:x:full", "crawl:x:incr",
-              "dl:ig", "dl:x"]:
-        pipe.llen(f"queue:{q}")
-        pipe.hlen(f"processing:{q}")
-        pipe.llen(f"dead:{q}")
-        pipe.zcard(f"retry:{q}")
-    results = pipe.execute()
+        # ===== Redis — 用 pipeline 批量查 =====
+        pipe = qr.pipeline()
+        for q in ["crawl:ig:full", "crawl:ig:incr",
+                  "crawl:x:full", "crawl:x:incr",
+                  "dl:ig", "dl:x"]:
+            pipe.llen(f"queue:{q}")
+            pipe.hlen(f"processing:{q}")
+            pipe.llen(f"dead:{q}")
+            pipe.zcard(f"retry:{q}")
+        results = pipe.execute()
 
-    queues = {}
-    qnames = ["crawl:ig:full", "crawl:ig:incr",
-              "crawl:x:full", "crawl:x:incr",
-              "dl:ig", "dl:x"]
-    for i, q in enumerate(qnames):
-        queues[q] = {
-            "pending": results[i*4] or 0,
-            "processing": results[i*4+1] or 0,
-            "dead": results[i*4+2] or 0,
-            "retry": results[i*4+3] or 0,
-        }
+        queues = {}
+        qnames = ["crawl:ig:full", "crawl:ig:incr",
+                  "crawl:x:full", "crawl:x:incr",
+                  "dl:ig", "dl:x"]
+        for i, q in enumerate(qnames):
+            queues[q] = {
+                "pending": results[i*4] or 0,
+                "processing": results[i*4+1] or 0,
+                "dead": results[i*4+2] or 0,
+                "retry": results[i*4+3] or 0,
+            }
 
-    # ===== Worker 心跳 =====
-    workers = {}
-    for k in qr.keys("worker:heartbeat:*"):
-        wid = k.split(":", 2)[2]
-        raw = qr.get(k) or "|0"
-        parts = raw.split("|")
-        host = parts[0] if len(parts) > 0 else "?"
-        ts = float(parts[1]) if len(parts) > 1 else 0
-        activity = parts[2] if len(parts) > 2 else ""
-        elapsed = parts[3] if len(parts) > 3 else ""
-        queue = parts[4] if len(parts) > 4 else ""
-        tid = parts[5] if len(parts) > 5 else ""
-        age = int(time.time() - ts)
-        workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host,
-                        "activity": activity, "elapsed": elapsed, "queue": queue,
-                        "tid": tid}
+        # ===== Worker 心跳 =====
+        workers = {}
+        for k in qr.keys("worker:heartbeat:*"):
+            wid = k.split(":", 2)[2]
+            raw = qr.get(k) or "|0"
+            parts = raw.split("|")
+            host = parts[0] if len(parts) > 0 else "?"
+            ts = float(parts[1]) if len(parts) > 1 else 0
+            activity = parts[2] if len(parts) > 2 else ""
+            elapsed = parts[3] if len(parts) > 3 else ""
+            queue = parts[4] if len(parts) > 4 else ""
+            tid = parts[5] if len(parts) > 5 else ""
+            age = int(time.time() - ts)
+            workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host,
+                            "activity": activity, "elapsed": elapsed, "queue": queue,
+                            "tid": tid}
 
-    # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
-    active_crawls = []
-    for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr"]:
-        if queues[q]["processing"]:
-            pipe2 = qr.pipeline()
-            tids = list(qr.hgetall(f"processing:{q}").keys())
-            for tid in tids:
-                pipe2.hget(f"task_meta:{q}:{tid}", "args")
-            args_list = pipe2.execute()
-            for j, tid in enumerate(tids):
-                user_id = "?"
-                try:
-                    a = eval(args_list[j] or "[]")
-                    user_id = str(a[0]) if a else "?"
-                except Exception:
+        # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
+        active_crawls = []
+        for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr"]:
+            if queues[q]["processing"]:
+                pipe2 = qr.pipeline()
+                tids = list(qr.hgetall(f"processing:{q}").keys())
+                for tid in tids:
+                    pipe2.hget(f"task_meta:{q}:{tid}", "args")
+                args_list = pipe2.execute()
+                for j, tid in enumerate(tids):
                     user_id = "?"
-                active_crawls.append({
-                    "queue": q,
-                    "user_id": user_id,
-                    "task_id": tid[:8],
-                })
+                    try:
+                        a = eval(args_list[j] or "[]")
+                        user_id = str(a[0]) if a else "?"
+                    except Exception:
+                        user_id = "?"
+                    active_crawls.append({
+                        "queue": q,
+                        "user_id": user_id,
+                        "task_id": tid[:8],
+                    })
 
-    # ===== 下载活跃 (取前 10，含用户和帖子) =====
-    active_downloads = []
-    for q in ["dl:ig", "dl:x"]:
-        if queues[q]["processing"]:
-            tids = list(qr.hgetall(f"processing:{q}").keys())[:12]
-            pipe2 = qr.pipeline()
-            for tid in tids:
-                pipe2.hget(f"task_meta:{q}:{tid}", "args")
-            args_list = pipe2.execute()
-            for j, tid in enumerate(tids):
-                info = {"queue": q, "task_id": tid[:8], "user": "-", "post": "-"}
-                try:
-                    a = eval(args_list[j] or "[]")
-                    if len(a) >= 5:
-                        info["user"] = str(a[4])  # user_id
-                    # 从 save_path 提取 post_id:  image/1065/abc.jpg 或 user/POST_0001.jpg
-                    if len(a) >= 2:
-                        fn = str(a[1]).rsplit("/", 1)[-1]  # 取文件名
-                        # 如果是 POST_0001.jpg 格式，提取 POST
-                        pid = fn.rsplit("_", 1)[0] if "_" in fn else fn[:16]
-                        info["post"] = pid
-                except Exception:
-                    pass
-                active_downloads.append(info)
+        # ===== 下载活跃 (取前 10，含用户和帖子) =====
+        active_downloads = []
+        for q in ["dl:ig", "dl:x"]:
+            if queues[q]["processing"]:
+                tids = list(qr.hgetall(f"processing:{q}").keys())[:12]
+                pipe2 = qr.pipeline()
+                for tid in tids:
+                    pipe2.hget(f"task_meta:{q}:{tid}", "args")
+                args_list = pipe2.execute()
+                for j, tid in enumerate(tids):
+                    info = {"queue": q, "task_id": tid[:8], "user": "-", "post": "-"}
+                    try:
+                        a = eval(args_list[j] or "[]")
+                        if len(a) >= 5:
+                            info["user"] = str(a[4])  # user_id
+                        # 从 save_path 提取 post_id:  image/1065/abc.jpg 或 user/POST_0001.jpg
+                        if len(a) >= 2:
+                            fn = str(a[1]).rsplit("/", 1)[-1]  # 取文件名
+                            # 如果是 POST_0001.jpg 格式，提取 POST
+                            pid = fn.rsplit("_", 1)[0] if "_" in fn else fn[:16]
+                            info["post"] = pid
+                    except Exception:
+                        pass
+                    active_downloads.append(info)
 
-    # ===== 当前活跃抓取详情 (取第一个) =====
-    current_crawl = None
-    if active_crawls:
-        c = active_crawls[0]
-        current_crawl = {
-            "user": c["user_id"],
-            "platform": c["queue"].split(":")[1],
-            "type": c["queue"].split(":")[2],
-            "task_id": c["task_id"],
-        }
+        # ===== 当前活跃抓取详情 (取第一个) =====
+        current_crawl = None
+        if active_crawls:
+            c = active_crawls[0]
+            current_crawl = {
+                "user": c["user_id"],
+                "platform": c["queue"].split(":")[1],
+                "type": c["queue"].split(":")[2],
+                "task_id": c["task_id"],
+            }
 
-    # ===== 最近完成的抓取任务 (scan task_meta 取 done, 限 20) =====
-    completed_crawls = []
-    done_keys = []
-    for k in qr.keys("task_meta:crawl:*"):
-        done_keys.append(k)
-        if len(done_keys) >= 50:
-            break
-    # pipeline 批量查 status
-    pipe2 = qr.pipeline()
-    for k in done_keys:
-        pipe2.hget(k, "status")
-    results = pipe2.execute()
-    for i, k in enumerate(done_keys):
-        if results[i] != "done":
-            continue
-        tid = k.rsplit(":", 1)[-1][:8]
-        q = ":".join(k.split(":")[1:4])
-        args_str = qr.hget(k, "args") or ""
-        user_id = "?"
-        try:
-            a = eval(args_str)
-            user_id = str(a[0]) if a else "?"
-        except Exception:
-            user_id = "auto"  # 自动入队任务无 args
-        completed_crawls.append({"queue": q, "user_id": user_id, "task_id": tid})
-    completed_crawls = completed_crawls[-6:][::-1]
+        # ===== 最近完成的抓取任务 (scan task_meta 取 done, 限 20) =====
+        completed_crawls = []
+        done_keys = []
+        for k in qr.keys("task_meta:crawl:*"):
+            done_keys.append(k)
+            if len(done_keys) >= 50:
+                break
+        # pipeline 批量查 status
+        pipe2 = qr.pipeline()
+        for k in done_keys:
+            pipe2.hget(k, "status")
+        results = pipe2.execute()
+        for i, k in enumerate(done_keys):
+            if results[i] != "done":
+                continue
+            tid = k.rsplit(":", 1)[-1][:8]
+            q = ":".join(k.split(":")[1:4])
+            args_str = qr.hget(k, "args") or ""
+            user_id = "?"
+            try:
+                a = eval(args_str)
+                user_id = str(a[0]) if a else "?"
+            except Exception:
+                user_id = "auto"  # 自动入队任务无 args
+            completed_crawls.append({"queue": q, "user_id": user_id, "task_id": tid})
+        completed_crawls = completed_crawls[-6:][::-1]
 
     finally:
         if db:
