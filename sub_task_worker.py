@@ -245,15 +245,17 @@ def main():
                         help="并发线程数 (默认 5)")
     opt_args = parser.parse_args()
 
+    import os as _os
+    _pid = _os.getpid()
     if opt_args.mode == "ig":
         queue_names = ["dl:ig"]
-        worker_id = "sub-worker-ig"
+        worker_id = f"sub-ig-{_pid}"
     elif opt_args.mode == "x":
         queue_names = ["dl:x"]
-        worker_id = "sub-worker-x"
+        worker_id = f"sub-x-{_pid}"
     else:
         queue_names = ["dl:ig", "dl:x"]
-        worker_id = "sub-worker"
+        worker_id = f"sub-{_pid}"
 
     logging.basicConfig(
         level=logging.INFO,
