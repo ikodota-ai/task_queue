@@ -288,7 +288,7 @@ def _setup_chrome(headless=False):
     opt = Options()
     opt.binary_location = cp
     opt.add_argument("--disable-blink-features=AutomationControlled")
-    opt.add_experimental_option("excludeSwitches", ["enable-automation"])
+    opt.add_experimental_option("excludeSwitches", ["enable-automation", "disable-popup-blocking"])
     opt.add_experimental_option("useAutomationExtension", False)
     opt.add_argument(
         "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -296,6 +296,8 @@ def _setup_chrome(headless=False):
     )
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
+    opt.add_argument("--disable-usb")
+    opt.add_experimental_option("excludeSwitches", ["enable-automation", "disable-popup-blocking"])
     opt.add_argument("--window-size=1920,1080")
     if headless or os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
         opt.add_argument("--headless=new")
