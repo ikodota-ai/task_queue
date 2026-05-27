@@ -243,6 +243,45 @@ class TaskQueue:
         self.redis.delete(f"processing_data:{task.task_id}")
         self.redis.hset(self.task_meta_key(task.queue_name, task.task_id), mapping={"status": status, "error": error[:500]})
 
+    _QUEUE_FUNC_MAP = {
+        "crawl:ig:full": "ig_full_crawl",
+        "crawl:ig:incr": "ig_incremental_crawl",
+        "crawl:ig:max1000": "ig_max1000_crawl",
+        "crawl:x:full": "x_full_crawl",
+        "crawl:x:incr": "x_incremental_crawl",
+        "dl:ig": "sub_download_image",
+        "dl:x": "sub_download_image",
+    }
+
+    def move_task(self, from_queue: str, to_queue: str):
+        """将 from_queue 中所有任务移到 to_queue，自动修正 func_name"""
+        import json as _json
+        new_func = self._QUEUE_FUNC_MAP.get(to_queue)
+        moved = 0
+        # 主队列
+        while True:
+            task_json = self.redis.rpop(self.queue_key(from_queue))
+            if not task_json:
+                break
+            t = _json.loads(task_json)
+            t["queue_name"] = to_queue
+            t["retry_count"] = 0
+            if new_func:
+                t["func_name"] = new_func
+            self.redis.rpush(self.queue_key(to_queue), _json.dumps(t))
+            moved += 1
+        # retry 队列
+        for task_json in self.redis.zrange(self.retry_key(from_queue), 0, -1):
+            t = _json.loads(task_json)
+            t["queue_name"] = to_queue
+            t["retry_count"] = 0
+            if new_func:
+                t["func_name"] = new_func
+            self.redis.zrem(self.retry_key(from_queue), task_json)
+            self.redis.rpush(self.queue_key(to_queue), _json.dumps(t))
+            moved += 1
+        return moved
+
     def retry_dead(self, queue_name: str, task_id: str = None):
         """手动将死信队列中的任务重新入队"""
         dead_key = self.dead_key(queue_name)
