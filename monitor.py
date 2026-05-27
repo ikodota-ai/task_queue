@@ -176,7 +176,7 @@ def api_status():
     # ===== Redis — 用 pipeline 批量查 =====
     pipe = qr.pipeline()
     for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:ig:max1000",
-              "crawl:x:full", "crawl:x:incr",
+              "crawl:x:full", "crawl:x:incr", "crawl:x:max1000",
               "dl:ig", "dl:x"]:
         pipe.llen(f"queue:{q}")
         pipe.hlen(f"processing:{q}")
@@ -186,7 +186,7 @@ def api_status():
 
     queues = {}
     qnames = ["crawl:ig:full", "crawl:ig:incr", "crawl:ig:max1000",
-              "crawl:x:full", "crawl:x:incr",
+              "crawl:x:full", "crawl:x:incr", "crawl:x:max1000",
               "dl:ig", "dl:x"]
     for i, q in enumerate(qnames):
         queues[q] = {
