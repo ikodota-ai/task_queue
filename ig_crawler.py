@@ -156,8 +156,8 @@ def _is_full_crawl_done(user_id: str) -> bool:
 
     return False
 
-def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str) -> int:
-    """插入 la_star_instagram，返回自增 ID"""
+def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str, post_ts: int = None) -> int:
+    """插入 la_star_instagram，返回自增 ID。post_ts 为帖子实际时间戳，为空则用当前时间。"""
     db = _get_db()
     try:
         cur = db.cursor()
@@ -165,7 +165,7 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
             f"INSERT IGNORE INTO {cfg['table_prefix']}star_instagram "
             "(star_id, check_code, image, batch, status, source, create_time) "
             "VALUES (%s, %s, %s, %s, 'N', 'ins', %s)",
-            (star_id, check_code, image, batch, int(time.time())),
+            (star_id, check_code, image, batch, post_ts or int(time.time())),
         )
         db.commit()
         return cur.lastrowid
@@ -440,39 +440,14 @@ def _is_video(link) -> bool:
     return False
 
 
-def _is_carousel(link) -> bool:
-    """检查帖子链接上是否有『多图』标记"""
-    indicators = [
-        ".//*[local-name()='svg' and contains(@aria-label, '轮播')]",
-        ".//*[local-name()='svg' and contains(@aria-label, 'carousel')]",
-    ]
-    for xp in indicators:
-        if link.find_elements(By.XPATH, xp):
-            return True
-    return False
-
-
 # -----------------------------------------------------------
-# 从网格缩略图取单张图片 URL
+# 点击弹框 → 提取图片 + 帖子时间戳
 # -----------------------------------------------------------
 
-def _extract_grid_thumbnail(link) -> Optional[str]:
-    """单图帖子：从网格链接中提取缩略图 URL"""
-    try:
-        img = link.find_element(By.XPATH, ".//img[contains(@src, 'cdninstagram.com')]")
-        return img.get_attribute("src")
-    except Exception:
-        return None
-
-
-# -----------------------------------------------------------
-# 多图帖子：点击弹框 → 翻页取所有图片
-# -----------------------------------------------------------
-
-def _extract_carousel_images(driver, link) -> List[str]:
+def _extract_carousel_images(driver, link) -> tuple:
     """
-    点击多图帖子，在弹框中翻页提取所有图片 URL。
-    返回图片 URL 列表（可能含 CDN 缩略图和全尺寸图）。
+    点击多图帖子，在弹框中翻页提取所有图片 URL 和帖子时间戳。
+    返回 (images: List[str], post_ts: int or None)
     """
     grid_url = driver.current_url
 
@@ -480,14 +455,13 @@ def _extract_carousel_images(driver, link) -> List[str]:
     try:
         link.click()
     except Exception:
-        return []
+        return [], None
     time.sleep(0.1)
 
     # 情形 A：弹框模式（URL 不变，dialog 出现）
-    # if driver.current_url == grid_url:
-    images = _extract_from_dialog(driver)
+    images, post_ts = _extract_from_dialog(driver)
     _close_dialog(driver)
-    return images
+    return images, post_ts
 
     # 情形 B：导航到了帖子页（旧版 Instagram）
     # logger.info("Navigated to post page, extracting there")
@@ -497,22 +471,38 @@ def _extract_carousel_images(driver, link) -> List[str]:
     # return images
 
 
-def _extract_from_dialog(driver) -> List[str]:
-    """从弹框中提取所有图片。
+def _extract_post_timestamp(driver):
+    """从弹框中提取帖子日期，转为 Unix 时间戳。失败返回 None。"""
+    try:
+        t_el = driver.find_element(
+            By.XPATH, "(//article[@role='presentation']//div//a/span/time)[1]"
+        )
+        dt_str = t_el.get_attribute("datetime")
+        if dt_str:
+            # ISO 8601: "2024-01-15T10:30:00.000Z"
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+    except Exception:
+        pass
+    return None
 
-    注意：Instagram 将轮播所有图片同时渲染在 DOM 中（多个 <li><img>），
-    用 transform: translateX 切换显示，因此第一次 _grab 就能拿到全部 URL，
-    不需要翻页。保留 JS 翻页作为兼容后备。
+
+def _extract_from_dialog(driver) -> tuple:
+    """从弹框中提取所有图片和帖子时间戳。
+    返回 (images: List[str], post_ts: int or None)
     """
     try:
         WebDriverWait(driver, 3).until(
             EC.presence_of_element_located((By.XPATH, "//div[@role='dialog']"))
         )
     except Exception:
-        return []
+        return [], None
 
     images = []
     seen = set()
+
+    post_ts = _extract_post_timestamp(driver)
 
     img = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
     img_url = None
@@ -568,7 +558,7 @@ def _extract_from_dialog(driver) -> List[str]:
         except:
             break
 
-    return images
+    return images, post_ts
 
 
 def _close_dialog(driver):
@@ -792,13 +782,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             image_urls: List[str] = []
             dom_changed = False
 
-            if _is_carousel(links[link_idx]):
-                image_urls = _extract_carousel_images(driver, links[link_idx])
-                dom_changed = True  # 弹框操作导致 DOM 变化，后续 link 引用失效
-            else:
-                thumb = _extract_grid_thumbnail(links[link_idx])
-                if thumb:
-                    image_urls = [thumb]
+            # 统一走弹窗：单图和多图都用 dialog，才能拿到时间戳
+            image_urls, post_ts = _extract_carousel_images(driver, links[link_idx])
+            dom_changed = True  # 弹框操作导致 DOM 变化，后续 link 引用失效
 
             if not image_urls:
                 _mark_processed(user_id, post_id)
@@ -820,7 +806,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 batch = f"/{user_id}/p/{post_id}/"
                 if star_id:
                     try:
-                        db_id = _insert_star_instagram(star_id, f"ig/image/{star_id}/{check_code}{ext}", batch, check_code)
+                        db_id = _insert_star_instagram(star_id, f"ig/image/{star_id}/{check_code}{ext}", batch, check_code, post_ts)
                         save_path = f"ig/image/{star_id}/{check_code}{ext}"
                     except Exception as e:
                         logger.error(f"DB insert failed: {e}")
