@@ -922,7 +922,8 @@ def ig_full_crawl(user_id: str, db_task_id: int = None) -> str:
     if db_task_id:
         _update_crawl_status(db_task_id, "processing")
     try:
-        count = _crawl_user(user_id, incremental=False)
+        count = _crawl_user(user_id, incremental=False,
+                            maxpage=int(os.getenv("MAX_PAGE", 500)))
         if db_task_id:
             _update_crawl_status(db_task_id, "done", count)
         result = f"full crawl: {count} images"
@@ -1005,7 +1006,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("full", "incr", "all"), default="all",
                         help="full=全量(默认500页), incr=增量, all=全量+增量")
+    parser.add_argument("--maxpage", type=int, default=int(os.getenv("MAX_PAGE", 500)),
+                        help="全量最大翻页数 (默认500)")
     opt_args = parser.parse_args()
+    os.environ["MAX_PAGE"] = str(opt_args.maxpage)
 
     if opt_args.mode == "full":
         queue_names = ["crawl:ig:full"]
