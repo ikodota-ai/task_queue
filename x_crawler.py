@@ -579,7 +579,6 @@ def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -
         logger.info(f"max{max_images} crawl for {user_id} already done, skipping")
         return 0
     if not incremental:
-    if not incremental:
         full_done = _state_redis().hget(_skey(user_id), "full_done")
         if full_done == "1":
             logger.info(f"Full crawl for {user_id} already completed (full_done=1), skipping")
