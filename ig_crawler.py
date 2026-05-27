@@ -692,8 +692,8 @@ def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -
         return 0
     if not incremental:
         state = _state_redis().hgetall(_skey(user_id))
-        if state.get("full_done") == "1":
-            logger.info(f"Full crawl for {user_id} already completed (full_done=1), skipping")
+        if state.get("full_done") == "1" or int(state.get("maxpage", 0)) >= 500:
+            logger.info(f"Full crawl for {user_id} already completed (full_done={state.get('full_done')}, maxpage={state.get('maxpage')}), skipping")
             return 0
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
@@ -740,7 +740,8 @@ def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -
     if star_id is None:
         logger.warning(f"No star_id found for {user_id}, DB insert disabled")
 
-    for scroll_idx in range(500):
+    max_scrolls = 500
+    for scroll_idx in range(max_scrolls):
         links = driver.find_elements(
             By.XPATH,
             "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
@@ -888,10 +889,17 @@ def _do_crawl(user_id: str, incremental: bool = False, max_images: int = None) -
             same_height = 0
         prev_height = new_h
 
+    # 标记实际翻页数
+    actual_pages = scroll_idx + 1
+    _state_redis().hset(_skey(user_id), "maxpage", str(actual_pages))
+    if same_height >= 10:
+        logger.info(f"Reached bottom at page {actual_pages}")
+    else:
+        logger.info(f"Reached max scroll limit ({max_scrolls} pages)")
+
     if max_images and processed >= max_images:
-        mark = f"max{max_images}_done"
-        _state_redis().hset(_skey(user_id), mark, "1")
-        logger.info(f"Reached {max_images} images, marked {mark}=1")
+        _state_redis().hset(_skey(user_id), "max1000_done", "1")
+        logger.info(f"Reached {max_images} images, marked max1000_done=1")
 
     if processed:
         _update_state(user_id, last_scrape_time=time.time())
