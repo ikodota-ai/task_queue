@@ -201,6 +201,20 @@ class ThreadPoolWorker:
         logger.info(f"{self.worker_id} starting with {self.num_threads} threads, "
                     f"queues: {self.queue_names}")
 
+        # 心跳线程
+        def heartbeat_loop():
+            import socket
+            host = socket.gethostname().split(".")[0]
+            while self.running:
+                self.task_queue.redis.setex(
+                    f"worker:heartbeat:{self.worker_id}",
+                    90,
+                    f"{host}|{time.time()}|dl:{self.num_threads}|0|"
+                    f"{','.join(self.queue_names)}||{self.num_threads}|{self.tasks_processed}",
+                )
+                time.sleep(30)
+        threading.Thread(target=heartbeat_loop, daemon=True).start()
+
         with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
             futures = []
             for i in range(self.num_threads):

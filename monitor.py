@@ -212,10 +212,12 @@ def api_status():
             elapsed = parts[3] if len(parts) > 3 else ""
             queue = parts[4] if len(parts) > 4 else ""
             tid = parts[5] if len(parts) > 5 else ""
+            threads = parts[6] if len(parts) > 6 else ""
+            processed = parts[7] if len(parts) > 7 else ""
             age = int(time.time() - ts)
             workers[wid] = {"alive": age < 90, "last_seen_sec": age, "host": host,
                             "activity": activity, "elapsed": elapsed, "queue": queue,
-                            "tid": tid}
+                            "tid": tid, "threads": threads, "processed": processed}
 
         # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
         active_crawls = []
@@ -453,7 +455,7 @@ async function refresh(){
     const allW = Object.entries(d.workers||{});
     const crawlW = allW.filter(([id]) => id.includes('crawler'));
     const subW = allW.filter(([id]) => id.includes('sub'));
-    const renderW = (list, cols, elemId) => {
+    const renderW = (list, cols, elemId, showThreads) => {
       let h = `<tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>`;
       for(const [wid, ws] of list){
         const alive = ws.alive ? 'alive' : 'dead';
@@ -464,13 +466,14 @@ async function refresh(){
         h += `<td style="color:#fa0">${ws.activity||'空闲'}</td>`;
         h += `<td style="color:#6a8a9e">${ws.tid||'-'}</td>`;
         h += `<td style="color:#6a8a9e">${ws.elapsed ? ws.elapsed+'s' : '-'}</td>`;
+        if(showThreads) h += `<td style="color:#5af">${ws.threads||'-'}</td>`;
         h += '</tr>';
       }
-      if(!list.length) h += '<tr><td colspan=6>无</td></tr>';
+      if(!list.length) h += `<tr><td colspan=${showThreads?7:6}>无</td></tr>`;
       document.getElementById(elemId).innerHTML = h;
     };
-    renderW(crawlW, ['队列','机器','Worker','状态','任务ID','耗时'], 'crawl-table');
-    renderW(subW, ['队列','机器','Worker','状态','任务ID','耗时'], 'dl-table');
+    renderW(crawlW, ['队列','机器','Worker','状态','任务ID','耗时'], 'crawl-table', false);
+    renderW(subW, ['队列','机器','Worker','状态','任务ID','耗时','线程'], 'dl-table', true);
 
     // ===== 队列表 (独立) =====
     document.getElementById('queues-table').innerHTML = (function(){
