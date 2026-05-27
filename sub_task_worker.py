@@ -37,16 +37,13 @@ def sub_download_image(url: str, save_path: str, db_id: int = None, platform: st
 
     if db_id:
         table = f"{cfg['table_prefix']}star_instagram"
-        try:
-            db = _get_thread_db()
-            cur = db.cursor()
-            cur.execute(
-                f"UPDATE `{table}` SET status = 'Y', verify_time = %s WHERE id = %s",
-                (int(time.time()), db_id),
-            )
-            db.commit()
-        except Exception as e:
-            logger.error(f"DB update failed for {table} id={db_id}: {e}")
+        db = _get_thread_db()
+        cur = db.cursor()
+        cur.execute(
+            f"UPDATE `{table}` SET status = 'Y', verify_time = %s WHERE id = %s",
+            (int(time.time()), db_id),
+        )
+        db.commit()
 
     return save_path
 
@@ -84,7 +81,7 @@ _thread_local = threading.local()
 
 
 def _get_thread_db() -> pymysql.Connection:
-    """获取当前线程的 MySQL 长连接"""
+    """获取当前线程的 MySQL 长连接，断线自动重连"""
     conn = getattr(_thread_local, "db", None)
     if conn is None or not conn.open:
         conn = pymysql.connect(
@@ -95,6 +92,21 @@ def _get_thread_db() -> pymysql.Connection:
             database=cfg["mysql_db"],
             charset="utf8mb4",
             autocommit=False,
+            connect_timeout=5, read_timeout=10,
+        )
+        _thread_local.db = conn
+    try:
+        conn.ping(reconnect=True)
+    except Exception:
+        conn = pymysql.connect(
+            host=cfg["mysql_host"],
+            port=cfg["mysql_port"],
+            user=cfg["mysql_user"],
+            password=cfg["mysql_password"],
+            database=cfg["mysql_db"],
+            charset="utf8mb4",
+            autocommit=False,
+            connect_timeout=5, read_timeout=10,
         )
         _thread_local.db = conn
     return conn
