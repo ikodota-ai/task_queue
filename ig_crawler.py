@@ -690,8 +690,11 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     # 全量已完成检查：full_done=1 或已抓页数 >= 目标 maxpage
     if not incremental:
         saved_maxpage = int(state.get("maxpage", 0))
-        if state.get("full_done") == "1" or saved_maxpage >= maxpage:
-            logger.info(f"Full crawl for {user_id} already done (full_done={state.get('full_done')}, maxpage={saved_maxpage}/{maxpage})")
+        if state.get("full_done") == "1" and saved_maxpage >= maxpage:
+            logger.info(f"Full crawl for {user_id} already done (full_done=1, maxpage={saved_maxpage}/{maxpage})")
+            return 0
+        if saved_maxpage >= maxpage:
+            logger.info(f"Full crawl for {user_id}: maxpage {saved_maxpage} already >= target {maxpage}, skipping")
             return 0
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
