@@ -118,15 +118,15 @@ class ThreadPoolWorker:
         self._lock = threading.Lock()
 
     def _process_loop(self, thread_id: int):
-        """单个线程的主循环"""
+        """单个线程的主循环：dequeue → execute → ack/nack"""
         from task_queue_robust import FUNC_REGISTRY
 
         tname = f"{self.worker_id}-t{thread_id}"
         logger.info(f"Thread {tname} started")
 
         while self.running:
+            task = None
             try:
-                task = None
                 for qname in self.queue_names:
                     task = self.task_queue.dequeue(qname, timeout=1)
                     if task:
@@ -135,20 +135,24 @@ class ThreadPoolWorker:
                 if not task:
                     continue
 
-                func_name = task["func_name"]
-                args = task.get("args", [])
-                kwargs = task.get("kwargs", {})
-
-                func = FUNC_REGISTRY.get(func_name)
+                func = FUNC_REGISTRY.get(task.func_name)
                 if func:
-                    func(*args, **kwargs)
-                    with self._lock:
-                        self.tasks_processed += 1
+                    func(*(task.args or []), **(task.kwargs or {}))
+                    self.task_queue.ack(task)
                 else:
-                    logger.warning(f"Unknown task function: {func_name}")
+                    logger.warning(f"Unknown task function: {task.func_name}")
+                    self.task_queue.ack(task)
+
+                with self._lock:
+                    self.tasks_processed += 1
 
             except Exception as e:
                 logger.error(f"Thread {tname} error: {e}")
+                if task:
+                    try:
+                        self.task_queue.nack(task, str(e)[:500])
+                    except Exception:
+                        pass
                 time.sleep(0.5)
 
         # 清理线程 DB 连接
