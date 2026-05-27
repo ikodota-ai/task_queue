@@ -124,6 +124,28 @@ class TaskQueue:
         """添加任务到队列"""
         return self.enqueue_batch(queue_name, [(func, args, kwargs)])[0]
 
+    def enqueue_unique(self, queue_name: str, func: Union[str, Callable], *args, **kwargs) -> str:
+        """入队前检查同队列是否已存在相同第一参数（user_id）的任务，存在则跳过"""
+        import json as _json
+        first_arg = str(args[0]) if args else ""
+        # 检查主队列
+        for task_json in self.redis.lrange(self.queue_key(queue_name), 0, -1):
+            try:
+                d = _json.loads(task_json)
+                if d.get("args") and str(d["args"][0]) == first_arg:
+                    return d["task_id"]  # 已存在
+            except Exception:
+                pass
+        # 检查 retry 队列
+        for task_json in self.redis.zrange(self.retry_key(queue_name), 0, -1):
+            try:
+                d = _json.loads(task_json)
+                if d.get("args") and str(d["args"][0]) == first_arg:
+                    return d["task_id"]
+            except Exception:
+                pass
+        return self.enqueue(queue_name, func, *args, **kwargs)
+
     def enqueue_batch(self, queue_name: str, tasks: List[tuple]) -> List[str]:
         """
         批量添加任务

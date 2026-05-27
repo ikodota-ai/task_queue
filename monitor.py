@@ -58,11 +58,11 @@ def api_enqueue():
     tq = _get_tq()
     queue_name = f"crawl:{platform}:{task_type}"
     func_name = f"{platform}_full_crawl" if task_type == "full" else f"{platform}_incremental_crawl"
-    # maxpage 传给任务
+    # maxpage 传给任务，防重
     if maxpage and maxpage.isdigit() and task_type == "full":
-        tid = tq.enqueue(queue_name, func_name, user_id, task_id, int(maxpage))
+        tid = tq.enqueue_unique(queue_name, func_name, user_id, task_id, int(maxpage))
     else:
-        tid = tq.enqueue(queue_name, func_name, user_id, task_id)
+        tid = tq.enqueue_unique(queue_name, func_name, user_id, task_id)
 
     return jsonify({
         "ok": True,

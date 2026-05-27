@@ -795,7 +795,7 @@ def x_full_crawl(user_id: str, db_task_id: int = None, maxpage: int = None) -> s
             pass
         tq = TaskQueue()
         tq.redis = _queue_redis()
-        tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id, db_task_id)
+        tq.enqueue_unique("crawl:x:incr", "x_incremental_crawl", user_id, db_task_id)
         logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
         return result
     except Exception:

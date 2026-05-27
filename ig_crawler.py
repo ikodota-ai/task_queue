@@ -946,7 +946,7 @@ def ig_full_crawl(user_id: str, db_task_id: int = None, maxpage: int = None) -> 
         # 只有真正滚到底才自动投增量
         state = _state_redis().hgetall(_skey(user_id))
         if state.get("full_done") == "1":
-            tq.enqueue("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
+            tq.enqueue_unique("crawl:ig:incr", "ig_incremental_crawl", user_id, db_task_id)
             logger.info(f"Auto-enqueued incremental for {user_id} (db_id={db_task_id})")
         else:
             logger.info(f"Full crawl for {user_id} did not reach bottom, skipping incr")
