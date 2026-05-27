@@ -100,16 +100,23 @@ def sub_db_write(table: str, data: dict, condition: dict = None) -> int:
     return affected
 
 
+_cached_db = None
+
+
 def _get_db() -> pymysql.Connection:
-    """获取 MySQL 连接"""
-    return pymysql.connect(
-        host=cfg["mysql_host"],
-        port=cfg["mysql_port"],
-        user=cfg["mysql_user"],
-        password=cfg["mysql_password"],
-        database=cfg["mysql_db"],
-        charset="utf8mb4",
-    )
+    """获取 MySQL 长连接（Worker 生命周期内复用）"""
+    global _cached_db
+    if _cached_db is None or not _cached_db.open:
+        _cached_db = pymysql.connect(
+            host=cfg["mysql_host"],
+            port=cfg["mysql_port"],
+            user=cfg["mysql_user"],
+            password=cfg["mysql_password"],
+            database=cfg["mysql_db"],
+            charset="utf8mb4",
+            autocommit=False,
+        )
+    return _cached_db
 
 
 # -----------------------------------------------------------
