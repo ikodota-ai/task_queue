@@ -1,15 +1,18 @@
 """
-子任务 Worker — 运行在指定服务器上，处理图片下载和数据库写入。
+子任务 Worker — 处理图片下载和数据库写入，支持线程池并发。
 注册两个函数到 FUNC_REGISTRY:
   - sub_download_image  -> 监听 dl:ig / dl:x 队列
   - sub_db_write        -> 监听 sub:dbwrite 队列
+用法:
+  python sub_task_worker.py --mode ig --threads 10
 """
-
 import logging
 import os
 import random
 import signal
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pymysql
@@ -20,44 +23,28 @@ from task_queue_robust import register_task, TaskQueue, Worker
 
 logger = logging.getLogger("SubTaskWorker")
 
-
 # -----------------------------------------------------------
 # 注册子任务函数
 # -----------------------------------------------------------
 
 @register_task("sub_download_image")
 def sub_download_image(url: str, save_path: str, db_id: int = None, platform: str = None, user_id: str = None) -> str:
-    """下载图片到本地，可选更新对应平台表状态
+    """下载图片并上传到存储，可选更新 DB 状态"""
+    from storage import upload_from_url
 
-    Args:
-        url: 图片 URL
-        save_path: 相对路径（相对于 SUB_DOWNLOAD_DIR）
-        db_id: 记录 ID，提供则下载后更新 status='Y'
-        platform: 'ig' 或 'x'，用于确定存储路径
-        user_id: Instagram 用户名（预留，日志用）
-
-    Returns: 最终文件路径
-    """
-    # 使用统一存储后端（本地/阿里云/七牛/腾讯云）
-    # OSS 直拉模式无需延迟——服务器只调 API，不下载
-    from storage import upload_from_url, get_url
     file_url = upload_from_url(url, save_path)
-    save_path = file_url  # 返回的是可访问 URL，后续 DB 更新用这个
+    save_path = file_url
 
-    logger.info(f"Uploaded {url} -> {save_path}")
-
-    # 更新 DB 状态（ig/x 共表 la_star_instagram，source 字段区分）
     if db_id:
         table = f"{cfg['table_prefix']}star_instagram"
         try:
-            db = _get_db()
+            db = _get_thread_db()
             cur = db.cursor()
             cur.execute(
                 f"UPDATE `{table}` SET status = 'Y', verify_time = %s WHERE id = %s",
                 (int(time.time()), db_id),
             )
             db.commit()
-            logger.info(f"DB updated: {table} id={db_id} status=Y")
         except Exception as e:
             logger.error(f"DB update failed for {table} id={db_id}: {e}")
 
@@ -66,29 +53,19 @@ def sub_download_image(url: str, save_path: str, db_id: int = None, platform: st
 
 @register_task("sub_db_write")
 def sub_db_write(table: str, data: dict, condition: dict = None) -> int:
-    """写入数据到 MySQL
-
-    Args:
-        table: 表名 (不含前缀，如 'star_instagram')
-        data: 要插入/更新的字段
-        condition: WHERE 条件，存在时执行 UPDATE，否则 INSERT
-
-    Returns: 受影响行数
-    """
+    """写入数据到 MySQL"""
     full_table = f"{cfg['table_prefix']}{table}" if not table.startswith(cfg['table_prefix']) else table
 
-    db = _get_db()
+    db = _get_thread_db()
     cursor = db.cursor()
 
     if condition:
-        # UPDATE
         set_clause = ", ".join(f"`{k}` = %s" for k in data)
         where_clause = " AND ".join(f"`{k}` = %s" for k in condition)
         sql = f"UPDATE `{full_table}` SET {set_clause} WHERE {where_clause}"
         params = list(data.values()) + list(condition.values())
         cursor.execute(sql, params)
     else:
-        # INSERT
         cols = ", ".join(f"`{k}`" for k in data)
         placeholders = ", ".join("%s" for _ in data)
         sql = f"INSERT INTO `{full_table}` ({cols}) VALUES ({placeholders})"
@@ -96,18 +73,21 @@ def sub_db_write(table: str, data: dict, condition: dict = None) -> int:
 
     db.commit()
     affected = cursor.rowcount
-    logger.info(f"DB write: {sql} -> {affected} rows")
     return affected
 
 
-_cached_db = None
+# -----------------------------------------------------------
+# 线程安全的 DB 连接（每个线程一个长连接）
+# -----------------------------------------------------------
+
+_thread_local = threading.local()
 
 
-def _get_db() -> pymysql.Connection:
-    """获取 MySQL 长连接（Worker 生命周期内复用）"""
-    global _cached_db
-    if _cached_db is None or not _cached_db.open:
-        _cached_db = pymysql.connect(
+def _get_thread_db() -> pymysql.Connection:
+    """获取当前线程的 MySQL 长连接"""
+    conn = getattr(_thread_local, "db", None)
+    if conn is None or not conn.open:
+        conn = pymysql.connect(
             host=cfg["mysql_host"],
             port=cfg["mysql_port"],
             user=cfg["mysql_user"],
@@ -116,7 +96,90 @@ def _get_db() -> pymysql.Connection:
             charset="utf8mb4",
             autocommit=False,
         )
-    return _cached_db
+        _thread_local.db = conn
+    return conn
+
+
+# -----------------------------------------------------------
+# 线程池 Worker
+# -----------------------------------------------------------
+
+class ThreadPoolWorker:
+    """多线程从队列取任务并处理。每个线程独立 dequeue → process。"""
+
+    def __init__(self, task_queue: TaskQueue, queue_names: list, worker_id: str = None,
+                 num_threads: int = 5):
+        self.task_queue = task_queue
+        self.queue_names = queue_names
+        self.worker_id = worker_id or "sub-worker"
+        self.num_threads = num_threads
+        self.running = False
+        self.tasks_processed = 0
+        self._lock = threading.Lock()
+
+    def _process_loop(self, thread_id: int):
+        """单个线程的主循环"""
+        from task_queue_robust import FUNC_REGISTRY
+
+        tname = f"{self.worker_id}-t{thread_id}"
+        logger.info(f"Thread {tname} started")
+
+        while self.running:
+            try:
+                task = None
+                for qname in self.queue_names:
+                    task = self.task_queue.dequeue(qname, timeout=1)
+                    if task:
+                        break
+
+                if not task:
+                    continue
+
+                func_name = task["func_name"]
+                args = task.get("args", [])
+                kwargs = task.get("kwargs", {})
+
+                func = FUNC_REGISTRY.get(func_name)
+                if func:
+                    func(*args, **kwargs)
+                    with self._lock:
+                        self.tasks_processed += 1
+                else:
+                    logger.warning(f"Unknown task function: {func_name}")
+
+            except Exception as e:
+                logger.error(f"Thread {tname} error: {e}")
+                time.sleep(0.5)
+
+        # 清理线程 DB 连接
+        conn = getattr(_thread_local, "db", None)
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        logger.info(f"Thread {tname} stopped")
+
+    def start(self):
+        self.running = True
+        logger.info(f"{self.worker_id} starting with {self.num_threads} threads, "
+                    f"queues: {self.queue_names}")
+
+        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+            futures = []
+            for i in range(self.num_threads):
+                futures.append(executor.submit(self._process_loop, i))
+
+            try:
+                for f in as_completed(futures):
+                    f.result()
+            except KeyboardInterrupt:
+                pass
+
+        logger.info(f"{self.worker_id} stopped, total processed: {self.tasks_processed}")
+
+    def stop(self):
+        self.running = False
 
 
 # -----------------------------------------------------------
@@ -128,6 +191,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("ig", "x", "all"), default="all",
                         help="ig=仅 IG, x=仅 X, all=两者 (默认)")
+    parser.add_argument("--threads", type=int, default=5,
+                        help="并发线程数 (默认 5)")
     opt_args = parser.parse_args()
 
     if opt_args.mode == "ig":
@@ -153,16 +218,16 @@ def main():
         decode_responses=True,
     )
 
-    worker = Worker(tq, queue_names, worker_id=worker_id)
+    worker = ThreadPoolWorker(tq, queue_names, worker_id=worker_id,
+                              num_threads=opt_args.threads)
 
     def shutdown(sig, frame):
-        logger.info("Shutting down sub-task worker...")
+        logger.info("Shutting down...")
         worker.stop()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    logger.info(f"Sub-task worker starting (queues: {', '.join(queue_names)})")
     worker.start()
 
 
