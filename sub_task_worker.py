@@ -37,13 +37,22 @@ def sub_download_image(url: str, save_path: str, db_id: int = None, platform: st
 
     if db_id:
         table = f"{cfg['table_prefix']}star_instagram"
-        db = _get_thread_db()
-        cur = db.cursor()
-        cur.execute(
-            f"UPDATE `{table}` SET status = 'Y', verify_time = %s WHERE id = %s",
-            (int(time.time()), db_id),
-        )
-        db.commit()
+        for attempt in range(3):
+            try:
+                db = _get_thread_db()
+                cur = db.cursor()
+                cur.execute(
+                    f"UPDATE `{table}` SET status = 'Y', verify_time = %s WHERE id = %s",
+                    (int(time.time()), db_id),
+                )
+                db.commit()
+                break
+            except Exception:
+                if attempt < 2:
+                    _clear_thread_db()
+                    time.sleep(1)
+                else:
+                    raise
 
     return save_path
 
@@ -92,7 +101,7 @@ def _get_thread_db() -> pymysql.Connection:
             database=cfg["mysql_db"],
             charset="utf8mb4",
             autocommit=False,
-            connect_timeout=5, read_timeout=10,
+            connect_timeout=5, read_timeout=30,
         )
         _thread_local.db = conn
     try:
@@ -106,10 +115,21 @@ def _get_thread_db() -> pymysql.Connection:
             database=cfg["mysql_db"],
             charset="utf8mb4",
             autocommit=False,
-            connect_timeout=5, read_timeout=10,
+            connect_timeout=5, read_timeout=30,
         )
         _thread_local.db = conn
     return conn
+
+
+def _clear_thread_db():
+    """清除当前线程的缓存连接（下次 _get_thread_db 会重建）"""
+    conn = getattr(_thread_local, "db", None)
+    if conn:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _thread_local.db = None
 
 
 # -----------------------------------------------------------
