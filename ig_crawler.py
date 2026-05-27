@@ -693,9 +693,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         if state.get("full_done") == "1" and saved_maxpage >= maxpage:
             logger.info(f"Full crawl for {user_id} already done (full_done=1, maxpage={saved_maxpage}/{maxpage})")
             return 0
-        if saved_maxpage >= maxpage:
-            logger.info(f"Full crawl for {user_id}: maxpage {saved_maxpage} already >= target {maxpage}, skipping")
-            return 0
+        # full_done 未设 → 不管 maxpage 多少都允许重抓
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
             logger.info(f"Full crawl for {user_id}: no cursor, will skip processed posts")
