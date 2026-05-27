@@ -37,6 +37,7 @@ def api_enqueue():
     platform = request.form.get("platform", "").strip().lower()
     task_type = request.form.get("type", "").strip().lower()
     user_id = request.form.get("user_id", "").strip()
+    maxpage = request.form.get("maxpage", "").strip()
     auto_repeat = request.form.get("auto_repeat") == "1"
 
     if platform not in ("ig", "x") or task_type not in ("full", "incr") or not user_id:
@@ -57,7 +58,11 @@ def api_enqueue():
     tq = _get_tq()
     queue_name = f"crawl:{platform}:{task_type}"
     func_name = f"{platform}_full_crawl" if task_type == "full" else f"{platform}_incremental_crawl"
-    tid = tq.enqueue(queue_name, func_name, user_id, task_id)
+    # maxpage 传给任务
+    if maxpage and maxpage.isdigit() and task_type == "full":
+        tid = tq.enqueue(queue_name, func_name, user_id, task_id, int(maxpage))
+    else:
+        tid = tq.enqueue(queue_name, func_name, user_id, task_id)
 
     return jsonify({
         "ok": True,

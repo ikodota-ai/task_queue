@@ -918,12 +918,13 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 # -----------------------------------------------------------
 
 @register_task("ig_full_crawl")
-def ig_full_crawl(user_id: str, db_task_id: int = None) -> str:
+def ig_full_crawl(user_id: str, db_task_id: int = None, maxpage: int = None) -> str:
+    if maxpage is None:
+        maxpage = int(os.getenv("MAX_PAGE", 500))
     if db_task_id:
         _update_crawl_status(db_task_id, "processing")
     try:
-        count = _crawl_user(user_id, incremental=False,
-                            maxpage=int(os.getenv("MAX_PAGE", 500)))
+        count = _crawl_user(user_id, incremental=False, maxpage=maxpage)
         if db_task_id:
             _update_crawl_status(db_task_id, "done", count)
         result = f"full crawl: {count} images"
