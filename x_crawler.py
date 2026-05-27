@@ -574,13 +574,15 @@ def _crawl_user(user_id: str, incremental: bool = False, maxpage: int = 500) -> 
 
 def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> int:
 
-    # 全量已完成检查：full_done=1 或已抓页数 >= 目标 maxpage
+    # 全量已完成检查：full_done=1 且 last_maxpage >= 本次目标则跳过
     if not incremental:
         full_done = _state_redis().hget(_skey(user_id), "full_done")
-        saved = int(_state_redis().hget(_skey(user_id), "maxpage") or 0)
-        if full_done == "1":
-            logger.info(f"Full crawl for {user_id} already completed (full_done=1), skipping")
+        saved = int(_state_redis().hget(_skey(user_id), "last_maxpage") or _state_redis().hget(_skey(user_id), "maxpage") or 0)
+        if full_done == "1" and saved >= maxpage:
+            logger.info(f"Full crawl for {user_id}: full_done=1, last_maxpage {saved} >= target {maxpage}, skipping")
             return 0
+        if full_done == "1":
+            logger.info(f"Full crawl for {user_id}: last_maxpage {saved} < target {maxpage}, deeper crawl")
         cursor = _get_cursor_url(user_id)
         if not cursor and _state_redis().scard(_pkey(user_id)) > 0:
             logger.info(f"Full crawl for {user_id}: no cursor, will skip already-processed posts")
@@ -735,9 +737,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             same_height = 0
         prev_height = new_h
 
-    # 标记实际翻页数
+    # 保存本次传入的期望 maxpage，区分于旧 key
     actual_pages = scroll_idx + 1
-    _state_redis().hset(_skey(user_id), "maxpage", str(actual_pages))
+    _state_redis().hset(_skey(user_id), "last_maxpage", str(maxpage))
     if same_height >= 10:
         logger.info(f"Reached bottom at page {actual_pages}")
         if not incremental:

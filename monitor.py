@@ -100,75 +100,74 @@ def _get_state_redis():
 
 @app.route("/api/status")
 def api_status():
-    db = _get_db()
-    qr = _get_queue_redis()
+    db = qr = sr = None
+    try:
+        db = _get_db()
+        qr = _get_queue_redis()
 
-    # ===== MySQL 任务概览 (单次查询) =====
-    cur = db.cursor()
-    cur.execute(f"""
-        SELECT platform, task_type, status, COUNT(*) as cnt
-        FROM {_TABLE} GROUP BY platform, task_type, status
-    """)
-    task_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-    for row in cur.fetchall():
-        task_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
-
-    cur.execute(f"""
-        SELECT id, platform, task_type, user_id, status,
-               DATE_FORMAT(updated_at, '%m-%d %H:%i') as upd
-        FROM {_TABLE} ORDER BY id DESC LIMIT 10
-    """)
-    recent_tasks = list(cur.fetchall())
-
-    # 今日进度
-    cur.execute(f"""
-        SELECT platform, task_type, status, COUNT(*) as cnt
-        FROM {_TABLE}
-        WHERE DATE(updated_at) = CURDATE()
-        GROUP BY platform, task_type, status
-    """)
-    today_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-    for row in cur.fetchall():
-        today_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
-
-    # 工作量汇总：今日/昨日/本周/本月
-    work_periods = {}
-    periods = {
-        "today":    "DATE(updated_at) = CURDATE()",
-        "yesterday":"DATE(updated_at) = CURDATE() - INTERVAL 1 DAY",
-        "week":     "YEARWEEK(updated_at) = YEARWEEK(CURDATE())",
-        "month":    "DATE_FORMAT(updated_at, '%Y%m') = DATE_FORMAT(CURDATE(), '%Y%m')",
-    }
-    for key, cond in periods.items():
+        # ===== MySQL 任务概览 (单次查询) =====
+        cur = db.cursor()
         cur.execute(f"""
-            SELECT platform,
-                   COUNT(DISTINCT user_id) as users,
-                   SUM(images_count) as images
-            FROM {_TABLE}
-            WHERE {cond} AND status = 'done'
-            GROUP BY platform
+            SELECT platform, task_type, status, COUNT(*) as cnt
+            FROM {_TABLE} GROUP BY platform, task_type, status
         """)
-        work_periods[key] = {}
+        task_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
         for row in cur.fetchall():
-            work_periods[key][row["platform"]] = {"users": row["users"] or 0, "images": row["images"] or 0}
+            task_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
 
-    # ===== 全量/增量覆盖统计 =====
-    sr = _get_state_redis()
-    full_done_cnt = {"ig": 0, "x": 0}
-    incr_24h = {"ig": 0, "x": 0}
-    now_ts = int(time.time())
-    for plat, prefix in [("ig", "instagram:"), ("x", "twitter:")]:
-        for k in sr.keys(f"{prefix}*:state"):
-            data = sr.hgetall(k)
-            if data.get("full_done") == "1":
-                full_done_cnt[plat] += 1
-            last = int(data.get("incr_last_time", 0))
-            if last > now_ts - 86400:
-                incr_24h[plat] += 1
-    coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
+        cur.execute(f"""
+            SELECT id, platform, task_type, user_id, status,
+                   DATE_FORMAT(updated_at, '%m-%d %H:%i') as upd
+            FROM {_TABLE} ORDER BY id DESC LIMIT 10
+        """)
+        recent_tasks = list(cur.fetchall())
 
-    db.close()
+        # 今日进度
+        cur.execute(f"""
+            SELECT platform, task_type, status, COUNT(*) as cnt
+            FROM {_TABLE}
+            WHERE DATE(updated_at) = CURDATE()
+            GROUP BY platform, task_type, status
+        """)
+        today_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        for row in cur.fetchall():
+            today_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
 
+        # 工作量汇总：今日/昨日/本周/本月
+        work_periods = {}
+        periods = {
+            "today":    "DATE(updated_at) = CURDATE()",
+            "yesterday":"DATE(updated_at) = CURDATE() - INTERVAL 1 DAY",
+            "week":     "YEARWEEK(updated_at) = YEARWEEK(CURDATE())",
+            "month":    "DATE_FORMAT(updated_at, '%Y%m') = DATE_FORMAT(CURDATE(), '%Y%m')",
+        }
+        for key, cond in periods.items():
+            cur.execute(f"""
+                SELECT platform,
+                       COUNT(DISTINCT user_id) as users,
+                       SUM(images_count) as images
+                FROM {_TABLE}
+                WHERE {cond} AND status = 'done'
+                GROUP BY platform
+            """)
+            work_periods[key] = {}
+            for row in cur.fetchall():
+                work_periods[key][row["platform"]] = {"users": row["users"] or 0, "images": row["images"] or 0}
+
+        # ===== 全量/增量覆盖统计 =====
+        sr = _get_state_redis()
+        full_done_cnt = {"ig": 0, "x": 0}
+        incr_24h = {"ig": 0, "x": 0}
+        now_ts = int(time.time())
+        for plat, prefix in [("ig", "instagram:"), ("x", "twitter:")]:
+            for k in sr.keys(f"{prefix}*:state"):
+                data = sr.hgetall(k)
+                if data.get("full_done") == "1":
+                    full_done_cnt[plat] += 1
+                last = int(data.get("incr_last_time", 0))
+                if last > now_ts - 86400:
+                    incr_24h[plat] += 1
+        coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
     # ===== task_meta 概况 (一次 keys 分类) =====
     tm_total = 0
     tm_by_q = {"dl:ig": 0, "dl:x": 0, "crawl": 0}
@@ -302,6 +301,23 @@ def api_status():
             user_id = "auto"  # 自动入队任务无 args
         completed_crawls.append({"queue": q, "user_id": user_id, "task_id": tid})
     completed_crawls = completed_crawls[-6:][::-1]
+
+    finally:
+        if db:
+            try:
+                db.close()
+            except Exception:
+                pass
+        if qr:
+            try:
+                qr.close()
+            except Exception:
+                pass
+        if sr:
+            try:
+                sr.close()
+            except Exception:
+                pass
 
     return jsonify({
         "task_stats": task_stats,
