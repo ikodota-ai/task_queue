@@ -39,7 +39,7 @@ def api_enqueue():
     user_id = request.form.get("user_id", "").strip()
     auto_repeat = request.form.get("auto_repeat") == "1"
 
-    if platform not in ("ig", "x") or task_type not in ("full", "incr", "max1000") or not user_id:
+    if platform not in ("ig", "x") or task_type not in ("full", "incr") or not user_id:
         return jsonify({"error": "invalid params"}), 400
 
     # 写入 MySQL
@@ -175,8 +175,8 @@ def api_status():
 
     # ===== Redis — 用 pipeline 批量查 =====
     pipe = qr.pipeline()
-    for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:ig:max1000",
-              "crawl:x:full", "crawl:x:incr", "crawl:x:max1000",
+    for q in ["crawl:ig:full", "crawl:ig:incr",
+              "crawl:x:full", "crawl:x:incr",
               "dl:ig", "dl:x"]:
         pipe.llen(f"queue:{q}")
         pipe.hlen(f"processing:{q}")
@@ -185,8 +185,8 @@ def api_status():
     results = pipe.execute()
 
     queues = {}
-    qnames = ["crawl:ig:full", "crawl:ig:incr", "crawl:ig:max1000",
-              "crawl:x:full", "crawl:x:incr", "crawl:x:max1000",
+    qnames = ["crawl:ig:full", "crawl:ig:incr",
+              "crawl:x:full", "crawl:x:incr",
               "dl:ig", "dl:x"]
     for i, q in enumerate(qnames):
         queues[q] = {
@@ -385,7 +385,7 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
         <option value="ig">IG</option><option value="x">X</option>
       </select>
       <select id="enq-type" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;">
-        <option value="full">全量</option><option value="incr">增量</option><option value="max1000">最大1000</option>
+        <option value="full">全量</option><option value="incr">增量</option>
       </select>
       <input id="enq-user" placeholder="user_id" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;;width:140px">
       <button type="submit" style="background:#5af;color:#000;border:none;padding:4px 12px;border-radius:3px;font-size:11px;font-size:1.5rem;;cursor:pointer;font-weight:bold">入队</button>

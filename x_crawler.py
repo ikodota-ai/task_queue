@@ -795,25 +795,6 @@ def x_full_crawl(user_id: str, db_task_id: int = None) -> str:
             _update_crawl_status(db_task_id, "failed")
         raise
 
-@register_task("x_max1000_crawl")
-def x_max1000_crawl(user_id: str, db_task_id: int = None) -> str:
-    if db_task_id:
-        _update_crawl_status(db_task_id, "processing")
-    try:
-        count = _crawl_user(user_id, incremental=False, max_images=1000)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "done", count)
-        if _state_redis().hget(_skey(user_id), "max1000_done") == "1":
-            tq = TaskQueue()
-            tq.redis = _queue_redis()
-            tq.enqueue("crawl:x:incr", "x_incremental_crawl", user_id, db_task_id)
-            logger.info(f"Auto-enqueued incremental for {user_id}")
-        return f"max1000 crawl: {count} images"
-    except Exception:
-        if db_task_id:
-            _update_crawl_status(db_task_id, "failed")
-        raise
-
 @register_task("x_incremental_crawl")
 def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
     # 检查全量是否完成
@@ -864,8 +845,8 @@ def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("full", "incr", "max1000", "all"), default="all",
-                        help="full=全量, incr=增量, max1000=全量上限1000张, all=两者")
+    parser.add_argument("--mode", choices=("full", "incr", "all"), default="all",
+                        help="full=全量(默认500页), incr=增量, all=全量+增量")
     opt_args = parser.parse_args()
 
     if opt_args.mode == "full":
@@ -874,9 +855,6 @@ def main():
     elif opt_args.mode == "incr":
         queue_names = ["crawl:x:incr"]
         worker_id = "x-crawler-incr"
-    elif opt_args.mode == "max1000":
-        queue_names = ["crawl:x:max1000"]
-        worker_id = "x-crawler-max1000"
     else:
         queue_names = ["crawl:x:full", "crawl:x:incr"]
         worker_id = "x-crawler"
