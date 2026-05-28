@@ -1,0 +1,37 @@
+@echo off
+REM IG/X Crawler Worker — 自动重启
+REM 用法: run_worker.bat                        (默认: ig_crawler.py --mode all)
+REM       run_worker.bat full                   (仅全量)
+REM       run_worker.bat incr                   (仅增量)
+REM       run_worker.bat all x_crawler          (X 平台)
+REM       run_worker.bat full ig_crawler 100    (全量, 最大100页)
+
+set MODE=%1
+if "%MODE%"=="" set MODE=all
+
+set SCRIPT=%2
+if "%SCRIPT%"=="" set SCRIPT=ig_crawler
+
+set MAXPAGE=%3
+if "%MAXPAGE%"=="" set MAXPAGE=500
+
+set PYTHON=venv\Scripts\python.exe
+
+if not exist "%PYTHON%" (
+    echo ERROR: %PYTHON% not found, run install.sh first
+    exit /b 1
+)
+
+set /a COUNT=0
+
+:loop
+set /a COUNT+=1
+echo ========================================
+echo [%DATE% %TIME%] Worker #%COUNT% starting: %PYTHON% -u %SCRIPT%.py --mode %MODE% --maxpage %MAXPAGE%
+echo ========================================
+
+"%PYTHON%" -u %SCRIPT%.py --mode %MODE% --maxpage %MAXPAGE%
+
+echo [%DATE% %TIME%] Worker #%COUNT% exited (code: %ERRORLEVEL%), restarting in 3s...
+timeout /t 3 /nobreak >nul
+goto loop
