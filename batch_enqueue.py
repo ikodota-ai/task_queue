@@ -172,26 +172,27 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
 
     qr = _get_queue_redis()
     table = cfg["table_prefix"] + "crawl_tasks"
+
+    # 一次性加载队列中已有的 user_id，避免每次 lrange O(n^2)
+    existing = set()
+    for item in qr.lrange(queue_key, 0, -1):
+        try:
+            d = json.loads(item)
+            if d.get("args"):
+                existing.add(str(d["args"][0]))
+        except Exception:
+            pass
+    if existing:
+        print(f"  Queue has {len(existing)} unique users, skipping duplicates")
+
     db = _get_db()
     cur = db.cursor()
 
     enqueued = 0
     for uid, _ in users:
+        if uid in existing:
+            continue
         try:
-            # 检查同用户是否已在队列中
-            already = False
-            for item in qr.lrange(queue_key, 0, -1):
-                try:
-                    d = json.loads(item)
-                    if d.get("args") and str(d["args"][0]) == uid:
-                        already = True
-                        break
-                except Exception:
-                    pass
-            if already:
-                continue
-
-            # 写 MySQL（maxpage 在 Redis task args 中，不存 DB）
             cur.execute(
                 f"INSERT INTO {table} (platform, task_type, user_id, status) "
                 "VALUES (%s, 'full', %s, 'pending')",
@@ -199,7 +200,6 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
             )
             db_task_id = cur.lastrowid
 
-            # 入队 Redis
             tid = str(uuid.uuid4())
             task_data = {
                 "task_id": tid,
@@ -211,10 +211,10 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
                 "enqueued_at": time.time(),
             }
             qr.rpush(queue_key, json.dumps(task_data))
-            db.commit()
             enqueued += 1
 
-            if enqueued % 50 == 0:
+            if enqueued % 100 == 0:
+                db.commit()
                 print(f"  ... {enqueued}/{len(users)}")
 
         except Exception as e:
@@ -222,6 +222,7 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
             db.rollback()
             continue
 
+    db.commit()
     db.close()
     print(f"\nDone. {enqueued} users enqueued to {queue_name}")
     print(f"Queue length: {qr.llen(queue_key)} (after)")
