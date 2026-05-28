@@ -129,11 +129,16 @@ def get_users(platform: str, country_filter=None, user_filter=None, skip_full_do
         return users
 
     sr = _get_state_redis()
+    # Pipeline 批量查 full_done，避免逐条网络往返
+    pipe = sr.pipeline()
+    for uid, _ in users:
+        pipe.hget(f"{pfx}:{uid}:state", "full_done")
+    results = pipe.execute()
+
     result = []
     skipped = 0
-    for uid, cid in users:
-        full_done = sr.hget(f"{pfx}:{uid}:state", "full_done")
-        if full_done == "1":
+    for i, (uid, cid) in enumerate(users):
+        if results[i] == "1":
             skipped += 1
             continue
         result.append((uid, cid))
