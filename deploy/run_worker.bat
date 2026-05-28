@@ -35,6 +35,8 @@ echo ========================================
 
 "%PYTHON%" -u %SCRIPT%.py --mode %MODE% --maxpage %MAXPAGE%
 
-echo [%DATE% %TIME%] Worker #%COUNT% exited (code: %ERRORLEVEL%), restarting in 3s...
-timeout /t 3 /nobreak >nul
+echo [%DATE% %TIME%] Worker #%COUNT% exited (code: %ERRORLEVEL%)
+echo Press Ctrl+C to stop, or wait 3s to restart...
+choice /t 3 /d y /n >nul
+if errorlevel 2 goto :eof
 goto loop
