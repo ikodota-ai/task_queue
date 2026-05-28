@@ -481,6 +481,17 @@ def _extract_carousel_images(driver, link) -> tuple:
     # return images
 
 
+def _is_valid_image(url: str) -> bool:
+    """过滤 Instagram 占位图和无效应答"""
+    if not url:
+        return False
+    bad = ("s150x150", "profile", "null.jpg", "rsrc.php")
+    for b in bad:
+        if b in url:
+            return False
+    return True
+
+
 def _extract_post_timestamp(driver):
     """从弹框中提取帖子日期，转为 Unix 时间戳。失败返回 None。"""
     try:
@@ -524,7 +535,7 @@ def _extract_from_dialog(driver) -> tuple:
             break
         except Exception:
             time.sleep(0.5)
-    if img_url and "s150x150" not in img_url and "profile" not in img_url:
+    if _is_valid_image(img_url):
         seen.add(img_url)
         images.append(img_url)
     logger.info(f"Carousel opened, initial images: {len(images)}")
@@ -562,7 +573,7 @@ def _extract_from_dialog(driver) -> tuple:
             new_images = driver.find_elements(By.XPATH,"//article[@role='presentation']//img[contains(@src, 'cdninstagram.com')]")
             for img in new_images:
                     img_url = img.get_attribute("src")
-                    if img_url and "s150x150" not in img_url and "profile" not in img_url and img_url not in seen:
+                    if _is_valid_image(img_url) and img_url not in seen:
                         seen.add(img_url)
                         images.append(img_url)
         except:
@@ -614,7 +625,7 @@ def _extract_images_from_post_page(driver) -> List[str]:
             )
         for img in imgs:
             src = img.get_attribute("src")
-            if src and "profile" not in src and "avatar" not in src:
+            if _is_valid_image(src) and "avatar" not in src:
                 if src not in images:
                     images.append(src)
 
@@ -633,7 +644,7 @@ def _extract_images_from_post_page(driver) -> List[str]:
                     )
                     for img in new_imgs:
                         src = img.get_attribute("src")
-                        if src and "profile" not in src and src not in images:
+                        if _is_valid_image(src) and src not in images:
                             images.append(src)
                 except Exception:
                     break
