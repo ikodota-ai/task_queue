@@ -861,11 +861,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("full", "incr", "all"), default="all",
-                        help="full=全量(默认500页), incr=增量, all=全量+增量")
-    parser.add_argument("--maxpage", type=int, default=int(os.getenv("MAX_PAGE", 500)),
-                        help="全量最大翻页数 (默认500)")
+                        help="full=全量, incr=增量, all=全量+增量")
     opt_args = parser.parse_args()
-    os.environ["MAX_PAGE"] = str(opt_args.maxpage)
 
     if opt_args.mode == "full":
         queue_names = ["crawl:x:full"]
