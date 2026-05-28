@@ -50,7 +50,8 @@ def _get_db():
         user=cfg["mysql_user"], password=cfg["mysql_password"],
         database=cfg["mysql_db"], charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=5, read_timeout=10,
+        connect_timeout=5, read_timeout=30,
+        autocommit=False,
     )
 
 
@@ -224,7 +225,10 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
 
         except Exception as e:
             print(f"  [ERROR] {uid}: {e}")
-            db.rollback()
+            try:
+                db.rollback()
+            except Exception:
+                pass
             continue
 
     db.commit()
