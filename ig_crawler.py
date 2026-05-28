@@ -297,7 +297,15 @@ def _setup_chrome(headless=False):
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
     opt.add_argument("--disable-usb")
-    opt.add_experimental_option("excludeSwitches", ["enable-automation", "disable-popup-blocking"])
+    # 内存优化
+    opt.add_argument("--max_old_space_size=512")
+    opt.add_argument("--js-flags=--max-old-space-size=512")
+    opt.add_argument("--disable-background-networking")
+    opt.add_argument("--disable-sync")
+    opt.add_argument("--disable-translate")
+    opt.add_argument("--disable-extensions")
+    opt.add_argument("--disable-component-extensions-with-background-pages")
+    opt.add_argument("--disable-ipc-flooding-protection")
     opt.add_argument("--window-size=1920,1080")
     if headless or os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
         opt.add_argument("--headless=new")
