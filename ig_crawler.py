@@ -768,12 +768,14 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     if star_id is None:
         logger.warning(f"No star_id found for {user_id}, DB insert disabled")
 
-    for scroll_idx in range(maxpage):
+    # 恢复时从上次保存的翻页进度继续，避免崩溃重计
+    start_page = int(state.get("pages_done", "0")) if not incremental else 0
+    for scroll_idx in range(start_page, maxpage):
         links = driver.find_elements(
             By.XPATH,
             "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
         )
-        logger.info(f"Scroll {scroll_idx+1}: {len(links)} links on page")
+        logger.info(f"Scroll {scroll_idx+1}/{maxpage}: {len(links)} links on page")
         new_found = 0
 
         link_idx = 0
@@ -895,6 +897,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             if incremental and no_new >= 5:
                 logger.info("No new posts for 5 scrolls, boundary reached")
                 break
+        # 每 3 页保存翻页进度，防止崩溃后重新计数
+        if not incremental and scroll_idx % 3 == 0:
+            _state_redis().hset(_skey(user_id), "pages_done", str(scroll_idx))
+
         # 滚动
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
@@ -908,6 +914,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         else:
             same_height = 0
         prev_height = new_h
+
+    # 清除翻页进度（已完成）
+    _state_redis().hdel(_skey(user_id), "pages_done")
 
     # 全量完成时写入 last_maxpage 和 full_done（增量不写）
     actual_pages = scroll_idx + 1
