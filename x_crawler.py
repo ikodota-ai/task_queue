@@ -647,8 +647,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     prev_height = 0
     since_cursor_save = 0
 
-    start_page = int(_state_redis().hget(_skey(user_id), "pages_done") or 0) if not incremental else 0
-    for scroll_idx in range(start_page, maxpage):
+    target_posts = maxpage * 12
+    posts_done = int(_state_redis().hget(_skey(user_id), "posts_done") or 0) if not incremental else 0
+    for scroll_idx in range(maxpage):
         links = driver.find_elements(
             By.XPATH,
             "//section[@role='region']//li[@role='listitem']//a",
@@ -730,11 +731,13 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             _mark_processed(user_id, tweet_id)
             processed += len(image_urls)
             new_found += 1
+            posts_done += 1
 
             if not incremental:
                 since_cursor_save += 1
-                if since_cursor_save >= 20:
+                if since_cursor_save >= 10:
                     _save_cursor(user_id, clean)
+                    _state_redis().hset(_skey(user_id), "posts_done", str(posts_done))
                     since_cursor_save = 0
 
             time.sleep(0.5)
@@ -751,8 +754,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 logger.info("No new tweets for 5 scrolls, boundary reached")
                 break
 
-        if not incremental and scroll_idx % 3 == 0:
-            _state_redis().hset(_skey(user_id), "pages_done", str(scroll_idx))
+        if not incremental and posts_done >= target_posts:
+            same_height = 10
+            break
 
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
@@ -767,7 +771,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             same_height = 0
         prev_height = new_h
 
-    _state_redis().hdel(_skey(user_id), "pages_done")
+    _state_redis().hdel(_skey(user_id), "posts_done")
 
     # 全量完成时写入 last_maxpage 和 full_done（增量不写）
     actual_pages = scroll_idx + 1

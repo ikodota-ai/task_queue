@@ -768,9 +768,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     if star_id is None:
         logger.warning(f"No star_id found for {user_id}, DB insert disabled")
 
-    # 恢复时从上次保存的翻页进度继续，避免崩溃重计
-    start_page = int(state.get("pages_done", "0")) if not incremental else 0
-    for scroll_idx in range(start_page, maxpage):
+    # 按帖数计数，maxpage * 12 条 = 目标，恢复时从已计数继续
+    target_posts = maxpage * 12
+    posts_done = int(state.get("posts_done", "0")) if not incremental else 0
+    for scroll_idx in range(maxpage):
         links = driver.find_elements(
             By.XPATH,
             "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
@@ -866,12 +867,14 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             _mark_processed(user_id, post_id)
             processed += len(image_urls)
             new_found += 1
+            posts_done += 1
 
-            # 每处理 20 个帖子保存一次游标
+            # 每处理 10 个帖子保存一次游标 + posts_done
             if not incremental:
                 since_cursor_save += 1
-                if since_cursor_save >= 20:
+                if since_cursor_save >= 10:
                     _save_cursor(user_id, clean)
+                    _state_redis().hset(_skey(user_id), "posts_done", str(posts_done))
                     since_cursor_save = 0
 
             # 短延迟避免检测
@@ -897,9 +900,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             if incremental and no_new >= 5:
                 logger.info("No new posts for 5 scrolls, boundary reached")
                 break
-        # 每 3 页保存翻页进度，防止崩溃后重新计数
-        if not incremental and scroll_idx % 3 == 0:
-            _state_redis().hset(_skey(user_id), "pages_done", str(scroll_idx))
+        # 达到目标帖数则提前结束
+        if not incremental and posts_done >= target_posts:
+            same_height = 10  # 触发底部逻辑
+            break
 
         # 滚动
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -915,8 +919,8 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             same_height = 0
         prev_height = new_h
 
-    # 清除翻页进度（已完成）
-    _state_redis().hdel(_skey(user_id), "pages_done")
+    # 已完成，清除进度
+    _state_redis().hdel(_skey(user_id), "posts_done")
 
     # 全量完成时写入 last_maxpage 和 full_done（增量不写）
     actual_pages = scroll_idx + 1
