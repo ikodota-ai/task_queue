@@ -1,15 +1,21 @@
 # IG/X Crawler Worker — 自动重启
-# 用法: .\run_worker.ps1                    (默认: ig_crawler.py --mode all)
-#       .\run_worker.ps1 -Mode full         (仅全量)
-#       .\run_worker.ps1 -Mode incr         (仅增量)
-#       .\run_worker.ps1 -Script x_crawler  (X 平台)
-#       .\run_worker.ps1 -Maxpage 100       全量最大页数
+# 用法: 在任意目录运行 deploy\run_worker.ps1 即可
+#       .\deploy\run_worker.ps1                        (默认: ig_crawler.py --mode all)
+#       .\deploy\run_worker.ps1 -Mode full              (仅全量)
+#       .\deploy\run_worker.ps1 -Mode incr              (仅增量)
+#       .\deploy\run_worker.ps1 -Script x_crawler       (X 平台)
+#       .\deploy\run_worker.ps1 -Maxpage 100            全量最大页数
 
 param(
     [string]$Script = "ig_crawler",
     [string]$Mode = "all",
     [int]$Maxpage = 500
 )
+
+# 切换到项目根目录 (deploy 的上级)
+Set-Location (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
+$ProjectRoot = (Get-Location).Path
+Write-Host "Project root: $ProjectRoot"
 
 $Python = "venv\Scripts\python.exe"
 

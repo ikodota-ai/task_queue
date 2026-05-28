@@ -1,10 +1,13 @@
 @echo off
 REM IG/X Crawler Worker — 自动重启
-REM 用法: run_worker.bat                        (默认: ig_crawler.py --mode all)
-REM       run_worker.bat full                   (仅全量)
-REM       run_worker.bat incr                   (仅增量)
-REM       run_worker.bat all x_crawler          (X 平台)
-REM       run_worker.bat full ig_crawler 100    (全量, 最大100页)
+REM 用法: 在任意目录运行 deploy\run_worker.bat 即可
+REM       deploy\run_worker.bat                   (默认: ig_crawler.py --mode all)
+REM       deploy\run_worker.bat full              (仅全量)
+REM       deploy\run_worker.bat incr              (仅增量)
+REM       deploy\run_worker.bat all x_crawler     (X 平台)
+REM       deploy\run_worker.bat full ig_crawler 100  (全量, 最大100页)
+
+cd /d "%~dp0.."
 
 set MODE=%1
 if "%MODE%"=="" set MODE=all
