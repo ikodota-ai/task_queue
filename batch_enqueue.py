@@ -149,7 +149,7 @@ def get_users(platform: str, country_filter=None, user_filter=None, skip_full_do
     return result
 
 
-def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
+def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False, priority: bool = False):
     """批量入队"""
     if not users:
         print("No users to enqueue.")
@@ -166,6 +166,8 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
     print(f"  Maxpage  : {maxpage}")
     print(f"  Users    : {len(users)}")
     print(f"  Mode     : {'DRY RUN (no changes)' if dry_run else 'LIVE'}")
+    if priority:
+        print(f"  Priority : LPUSH (插队)")
     print(f"  Queue len: {_get_queue_redis().llen(queue_key)} (before)")
 
     if dry_run:
@@ -216,7 +218,10 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False):
                 "retry_count": 0,
                 "enqueued_at": time.time(),
             }
-            qr.rpush(queue_key, json.dumps(task_data))
+            if priority:
+                qr.lpush(queue_key, json.dumps(task_data))
+            else:
+                qr.rpush(queue_key, json.dumps(task_data))
             enqueued += 1
 
             if enqueued % 100 == 0:
@@ -253,6 +258,8 @@ def main():
                         help="指定用户入队，逗号分隔，如 'user1,user2'")
     parser.add_argument("--no-skip-fd", action="store_true",
                         help="不跳过 full_done=1 的用户（默认跳过）")
+    parser.add_argument("--priority", action="store_true",
+                        help="插队模式：LPUSH 到队首，下一个被 worker 取到")
 
     args = parser.parse_args()
 
@@ -296,7 +303,7 @@ def main():
     )
     print(f"Target users: {len(users)}")
 
-    batch_enqueue(args.platform, users, args.maxpage, dry_run=args.dry_run)
+    batch_enqueue(args.platform, users, args.maxpage, dry_run=args.dry_run, priority=args.priority)
 
 
 if __name__ == "__main__":
