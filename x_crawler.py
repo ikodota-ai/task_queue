@@ -111,6 +111,24 @@ def _lookup_star_id(user_id: str) -> Optional[int]:
     finally:
         pass  # 复用连接
 
+
+def _mark_full_done_db(user_id: str, maxpage: int, platform: str = "x"):
+    """全量完成时写入 la_star_info"""
+    db = _get_db()
+    try:
+        cur = db.cursor()
+        col_done = f"{platform}_full_done"
+        col_maxpage = f"{platform}_maxpage"
+        cur.execute(
+            f"UPDATE la_star_info SET {col_done}=1, {col_maxpage}=%s WHERE twitter=%s",
+            (maxpage, user_id),
+        )
+        db.commit()
+        logger.info(f"DB updated: la_star_info.{col_done}=1 for {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to update DB full_done for {user_id}: {e}")
+
+
 def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str, source: str = "x") -> int:
     db = _get_db()
     try:
@@ -745,17 +763,20 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             same_height = 0
         prev_height = new_h
 
-    # 保存本次传入的期望 maxpage，区分于旧 key
+    # 全量完成时写入 last_maxpage 和 full_done（增量不写）
     actual_pages = scroll_idx + 1
-    _state_redis().hset(_skey(user_id), "last_maxpage", str(maxpage))
     if same_height >= 10:
         logger.info(f"Reached bottom at page {actual_pages}")
         if not incremental:
+            _state_redis().hset(_skey(user_id), "last_maxpage", str(maxpage))
             _state_redis().hset(_skey(user_id), "full_done", "1")
+            _mark_full_done_db(user_id, maxpage, "x")
     else:
         logger.info(f"Reached maxpage limit ({maxpage} pages)")
         if not incremental:
+            _state_redis().hset(_skey(user_id), "last_maxpage", str(maxpage))
             _state_redis().hset(_skey(user_id), "full_done", "1")
+            _mark_full_done_db(user_id, maxpage, "x")
 
     if processed:
         _update_state(user_id, last_scrape_time=time.time())
