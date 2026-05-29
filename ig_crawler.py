@@ -768,8 +768,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     if star_id is None:
         logger.warning(f"No star_id found for {user_id}, DB insert disabled")
 
-    # 按帖数计数，maxpage * 12 条 = 目标，恢复时从已计数继续
-    target_posts = maxpage * 12
     posts_done = int(state.get("posts_done", "0")) if not incremental else 0
     scroll_idx = 0
     while scroll_idx < maxpage:
@@ -777,56 +775,81 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             By.XPATH,
             "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
         )
-        logger.info(f"Scroll {scroll_idx+1}/{maxpage}: {len(links)} links on page")
-        new_found = 0
-
-        # 收集当前页所有 href（先取文本，不受弹窗 DOM 变化影响）
-        hrefs = []
-        for link in links:
+        # 记录本次滚动初始可见的 hrefs，只处理这些，跳过懒加载新增的
+        scroll_hrefs = set()
+        for _l in links:
             try:
-                h = link.get_attribute("href")
-                if h:
-                    hrefs.append(h)
+                _h = _l.get_attribute("href")
+                if _h:
+                    scroll_hrefs.add(_h.split("?")[0])
             except Exception:
                 pass
+        logger.info(f"Scroll {scroll_idx+1}/{maxpage}: {len(scroll_hrefs)} links on page")
+        new_found = 0
 
-        for href in hrefs:
+        link_idx = 0
+        while link_idx < len(links):
+            try:
+                href = links[link_idx].get_attribute("href")
+            except Exception:
+                link_idx += 1
+                continue
+            if not href:
+                link_idx += 1
+                continue
             clean = href.split("?")[0]
+
+            # 跳过懒加载新增的 link（不在本次滚动初始集合中）
+            if clean not in scroll_hrefs:
+                link_idx += 1
+                continue
 
             # ---- 续跑：快进到游标位置 ----
             if not cursor_found:
                 if clean == cursor_url:
                     cursor_found = True
                     logger.info("Found cursor, resuming crawl")
+                link_idx += 1
                 continue
 
             if clean in seen_urls:
+                link_idx += 1
                 continue
             seen_urls.add(clean)
 
             post_id = _extract_post_id(clean)
             if not post_id:
+                link_idx += 1
                 continue
 
             # 跳过视频
-            if "/reel/" in clean:
+            if "/reel/" in clean or _is_video(links[link_idx]):
+                link_idx += 1
                 continue
 
-            # 跳过已处理
+            # 跳过已处理（全量续跑由游标控制位置，不跳过以防标记过但未下载）
             if cursor_url is None and _is_processed(user_id, post_id):
+                link_idx += 1
                 continue
 
-            # ---- 提取图片：用 post path 定位 link 元素 ----
-            post_path = "/" + clean.split("/", 3)[-1]  # /p/ABC123/ 或 /reel/ABC/
-            try:
-                link_el = driver.find_element(By.XPATH, f"//a[contains(@href,'{post_path}')]")
-            except Exception:
-                continue
+            # ---- 提取图片 ----
+            image_urls: List[str] = []
+            dom_changed = False
 
-            image_urls, post_ts = _extract_carousel_images(driver, link_el)
+            # 统一走弹窗：单图和多图都用 dialog，才能拿到时间戳
+            image_urls, post_ts = _extract_carousel_images(driver, links[link_idx])
+            dom_changed = True  # 弹框操作导致 DOM 变化，后续 link 引用失效
 
             if not image_urls:
                 _mark_processed(user_id, post_id)
+                if dom_changed:
+                    links = driver.find_elements(
+                        By.XPATH,
+                        "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
+                    )
+                    link_idx = 0
+                else:
+                    link_idx += 1
                 continue
 
             # ---- 写入 DB + 发下载子任务 ----
@@ -846,6 +869,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 else:
                     db_id = None
                     save_path = f"ig/{user_id}/{filename}"
+                # db_id=0 表示 check_code 已存在，跳过下载
                 if db_id == 0:
                     continue
                 tq.enqueue(
@@ -866,7 +890,17 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                     _state_redis().hset(_skey(user_id), "posts_done", str(posts_done))
                     since_cursor_save = 0
 
+            # 短延迟避免检测
             time.sleep(0.5)
+
+            if dom_changed:
+                links = driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
+                )
+                link_idx = 0
+            else:
+                link_idx += 1
 
         if new_found:
             logger.info(
@@ -879,11 +913,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             if incremental and no_new >= 5:
                 logger.info("No new posts for 5 scrolls, boundary reached")
                 break
-        # 达到目标帖数则提前结束
-        if not incremental and posts_done >= target_posts:
-            same_height = 10  # 触发底部逻辑
-            break
-
         # 滚动
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(3)
