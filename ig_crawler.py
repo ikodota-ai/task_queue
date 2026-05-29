@@ -818,7 +818,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 
             # ---- 提取图片：在页面上找到对应 link 元素点击 ----
             try:
-                link_el = driver.find_element(By.XPATH, f"//a[@href='{clean}']")
+                link_el = driver.find_element(By.XPATH, f"//a[contains(@href,'{clean}')]")
             except Exception:
                 continue
 
