@@ -649,7 +649,8 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 
     target_posts = maxpage * 12
     posts_done = int(_state_redis().hget(_skey(user_id), "posts_done") or 0) if not incremental else 0
-    for scroll_idx in range(maxpage):
+    scroll_idx = 0
+    while scroll_idx < maxpage:
         links = driver.find_elements(
             By.XPATH,
             "//section[@role='region']//li[@role='listitem']//a",
@@ -769,6 +770,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 break
         else:
             same_height = 0
+            scroll_idx += 1
         prev_height = new_h
 
     _state_redis().hdel(_skey(user_id), "posts_done")

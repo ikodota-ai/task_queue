@@ -771,7 +771,8 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     # 按帖数计数，maxpage * 12 条 = 目标，恢复时从已计数继续
     target_posts = maxpage * 12
     posts_done = int(state.get("posts_done", "0")) if not incremental else 0
-    for scroll_idx in range(maxpage):
+    scroll_idx = 0
+    while scroll_idx < maxpage:
         links = driver.find_elements(
             By.XPATH,
             "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
@@ -917,6 +918,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 break
         else:
             same_height = 0
+            scroll_idx += 1
         prev_height = new_h
 
     # 已完成，清除进度
