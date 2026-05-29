@@ -816,9 +816,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             if cursor_url is None and _is_processed(user_id, post_id):
                 continue
 
-            # ---- 提取图片：在页面上找到对应 link 元素点击 ----
+            # ---- 提取图片：用 post path 定位 link 元素 ----
+            post_path = "/" + clean.split("/", 3)[-1]  # /p/ABC123/ 或 /reel/ABC/
             try:
-                link_el = driver.find_element(By.XPATH, f"//a[contains(@href,'{clean}')]")
+                link_el = driver.find_element(By.XPATH, f"//a[contains(@href,'{post_path}')]")
             except Exception:
                 continue
 
