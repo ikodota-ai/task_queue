@@ -658,16 +658,18 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         logger.info(f"Scroll {scroll_idx+1}: {len(links)} tweet links on page")
 
         new_found = 0
-        link_idx = 0
 
-        while link_idx < len(links):
+        # 收集当前页所有 href（先取文本，不受弹窗 DOM 变化影响）
+        hrefs = []
+        for link in links:
             try:
-                href = links[link_idx].get_attribute("href")
+                h = link.get_attribute("href")
+                if h:
+                    hrefs.append(h)
             except Exception:
-                link_idx += 1
-                continue
-            if not href:
-                continue
+                pass
+
+        for href in hrefs:
             clean = href.split("?")[0]
 
             # 游标续跑
@@ -689,17 +691,16 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             if cursor_url is None and _is_processed(user_id, tweet_id):
                 continue
 
-            # ---- 提取图片 ----
-            image_urls: List[str] = []
+            # ---- 提取图片：在页面上找到对应 link 元素点击 ----
+            try:
+                link_el = driver.find_element(By.XPATH, f"//a[@href='{clean}']")
+            except Exception:
+                continue
 
-            # 点开弹窗取所有图
-            image_urls = _extract_carousel_images(driver, link)
+            image_urls = _extract_carousel_images(driver, link_el)
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
-                links = driver.find_elements(
-                    By.XPATH, "//section[@role='region']//li[@role='listitem']//a")
-                link_idx = 0
                 continue
 
             # ---- 写入 DB + 发下载子任务 ----
@@ -742,9 +743,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                     since_cursor_save = 0
 
             time.sleep(0.5)
-            links = driver.find_elements(
-                By.XPATH, "//section[@role='region']//li[@role='listitem']//a")
-            link_idx = 0
 
         if new_found:
             logger.info(f"Scroll {scroll_idx+1}: +{new_found} tweets ({processed} images)")

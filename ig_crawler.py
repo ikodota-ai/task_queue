@@ -780,16 +780,17 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         logger.info(f"Scroll {scroll_idx+1}/{maxpage}: {len(links)} links on page")
         new_found = 0
 
-        link_idx = 0
-        while link_idx < len(links):
+        # 收集当前页所有 href（先取文本，不受弹窗 DOM 变化影响）
+        hrefs = []
+        for link in links:
             try:
-                href = links[link_idx].get_attribute("href")
+                h = link.get_attribute("href")
+                if h:
+                    hrefs.append(h)
             except Exception:
-                link_idx += 1
-                continue
-            if not href:
-                link_idx += 1
-                continue
+                pass
+
+        for href in hrefs:
             clean = href.split("?")[0]
 
             # ---- 续跑：快进到游标位置 ----
@@ -797,47 +798,34 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 if clean == cursor_url:
                     cursor_found = True
                     logger.info("Found cursor, resuming crawl")
-                link_idx += 1
                 continue
 
             if clean in seen_urls:
-                link_idx += 1
                 continue
             seen_urls.add(clean)
 
             post_id = _extract_post_id(clean)
             if not post_id:
-                link_idx += 1
                 continue
 
             # 跳过视频
-            if "/reel/" in clean or _is_video(links[link_idx]):
-                link_idx += 1
+            if "/reel/" in clean:
                 continue
 
-            # 跳过已处理（全量续跑由游标控制位置，不跳过以防标记过但未下载）
+            # 跳过已处理
             if cursor_url is None and _is_processed(user_id, post_id):
-                link_idx += 1
                 continue
 
-            # ---- 提取图片 ----
-            image_urls: List[str] = []
-            dom_changed = False
+            # ---- 提取图片：在页面上找到对应 link 元素点击 ----
+            try:
+                link_el = driver.find_element(By.XPATH, f"//a[@href='{clean}']")
+            except Exception:
+                continue
 
-            # 统一走弹窗：单图和多图都用 dialog，才能拿到时间戳
-            image_urls, post_ts = _extract_carousel_images(driver, links[link_idx])
-            dom_changed = True  # 弹框操作导致 DOM 变化，后续 link 引用失效
+            image_urls, post_ts = _extract_carousel_images(driver, link_el)
 
             if not image_urls:
                 _mark_processed(user_id, post_id)
-                if dom_changed:
-                    links = driver.find_elements(
-                        By.XPATH,
-                        "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
-                    )
-                    link_idx = 0
-                else:
-                    link_idx += 1
                 continue
 
             # ---- 写入 DB + 发下载子任务 ----
@@ -857,7 +845,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 else:
                     db_id = None
                     save_path = f"ig/{user_id}/{filename}"
-                # db_id=0 表示 check_code 已存在，跳过下载
                 if db_id == 0:
                     continue
                 tq.enqueue(
@@ -878,17 +865,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                     _state_redis().hset(_skey(user_id), "posts_done", str(posts_done))
                     since_cursor_save = 0
 
-            # 短延迟避免检测
             time.sleep(0.5)
-
-            if dom_changed:
-                links = driver.find_elements(
-                    By.XPATH,
-                    "//a[contains(@href, '/p/') or contains(@href, '/reel/')]",
-                )
-                link_idx = 0
-            else:
-                link_idx += 1
 
         if new_found:
             logger.info(
