@@ -200,6 +200,7 @@ _driver = None
 _driver_lock = threading.Lock()
 _user_data_dir = None   # 当前 Chrome user-data-dir
 _service_pid = None      # chromedriver 进程 PID，用于跨平台杀进程树
+_stop_requested = False  # 优雅中断：Ctrl+C 时置 True，_do_crawl 检测后提前退出
 
 
 def _kill_driver_tree():
@@ -746,6 +747,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     posts_done = int(_state_redis().hget(_skey(user_id), "posts_done") or 0) if not incremental else 0
     scroll_idx = 0
     while scroll_idx < maxpage:
+        if _stop_requested:
+            logger.info("Stop requested, aborting crawl loop")
+            break
         links = driver.find_elements(
             By.XPATH,
             "//section[@role='region']//li[@role='listitem']//a",
@@ -765,6 +769,9 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                 pass
 
         for href in hrefs:
+            if _stop_requested:
+                logger.info("Stop requested, aborting post processing")
+                break
             clean = href.split("?")[0]
 
             # 游标续跑
@@ -1023,15 +1030,18 @@ def main():
             tq.retry_dead(q)
 
     def shutdown(sig, frame):
+        global _stop_requested
+        _stop_requested = True
         worker.stop()
-        _close_driver()
+        # 不在这里 _close_driver()，否则会杀死爬虫正在使用的 Chrome。
+        # 等 _do_crawl 检测 _stop_requested 退出后，worker.start() 返回再清理。
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
     logger.info(f"X crawler worker ready (queues: {', '.join(queue_names)})")
     worker.start()
-    _close_driver()
+    _close_driver()  # worker 退出后安全清理
 
 
 if __name__ == "__main__":
