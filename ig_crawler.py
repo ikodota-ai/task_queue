@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import threading
 import time
 from typing import List, Optional
@@ -196,45 +197,50 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
 
 _driver = None
 _driver_lock = threading.Lock()
-_user_data_dir = None  # 追踪当前 Chrome user-data-dir，用于精准杀进程+删目录
+_user_data_dir = None   # 当前 Chrome user-data-dir
+_service_pid = None      # chromedriver 进程 PID，用于跨平台杀进程树
 
 
-def _kill_chrome_proc(user_data_dir: str):
-    """杀掉使用指定目录的 Chrome 进程，然后删除目录。"""
-    if not user_data_dir or not os.path.isdir(user_data_dir):
+def _kill_driver_tree():
+    """杀掉 chromedriver 及其所有 Chrome 子进程（跨平台）。"""
+    global _service_pid
+    pid = _service_pid
+    _service_pid = None
+    if not pid:
         return
-    # 1) fuser -k（Linux 标配，最快）
     try:
-        import subprocess as _sp
-        _sp.run(["fuser", "-k", user_data_dir],
-                capture_output=True, timeout=10)
-        time.sleep(1.0)
-    except Exception:
-        pass
-    # 2) 兜底：扫 /proc 补刀（fuser 不存在或未杀干净时）
-    try:
-        import glob as _g
-        encoded = user_data_dir.encode()
-        for cmdline_f in _g.glob("/proc/*/cmdline"):
+        if sys.platform == "win32":
+            import subprocess as _sp
+            _sp.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=10)
+        else:
+            # Linux / macOS: 先找子进程，再杀父进程
+            import subprocess as _sp
             try:
-                pid = int(cmdline_f.split("/")[2])
-                with open(cmdline_f, "rb") as f:
-                    if encoded in f.read():
-                        os.kill(pid, signal.SIGTERM)
+                r = _sp.run(["pgrep", "-P", str(pid)],
+                           capture_output=True, text=True, timeout=5)
+                child_pids = [int(p) for p in r.stdout.strip().split() if p.isdigit()]
             except Exception:
-                pass
-        time.sleep(0.8)
-        for cmdline_f in _g.glob("/proc/*/cmdline"):
-            try:
-                pid = int(cmdline_f.split("/")[2])
-                with open(cmdline_f, "rb") as f:
-                    if encoded in f.read():
-                        os.kill(pid, signal.SIGKILL)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    # 3) 删除目录
+                child_pids = []
+            for p in child_pids + [pid]:
+                try:
+                    os.kill(p, signal.SIGTERM)
+                except OSError:
+                    pass
+            time.sleep(1.0)
+            for p in child_pids + [pid]:
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except OSError:
+                    pass
+    except Exception as e:
+        logger.warning(f"Failed to kill driver process tree (PID={pid}): {e}")
+
+
+def _rm_old_dir(user_data_dir: str):
+    """删除旧的 user-data-dir。"""
+    if not user_data_dir:
+        return
     try:
         import shutil as _sh
         _sh.rmtree(user_data_dir, ignore_errors=True)
@@ -244,24 +250,25 @@ def _kill_chrome_proc(user_data_dir: str):
 
 
 def _cleanup_stale_dirs():
-    """启动时一次性清理：删除已死进程残留的 chrome_ig_* 目录，并杀关联 Chrome 进程。"""
-    import glob as _g
+    """启动时一次性清理：删除已死进程残留的 chrome_ig_* 目录。"""
+    import glob as _g, tempfile
     my_pid = os.getpid()
-    for old_dir in _g.glob("/tmp/chrome_ig_*"):
+    tmpdir = tempfile.gettempdir()
+    for old_dir in _g.glob(os.path.join(tmpdir, "chrome_ig_*")):
         try:
             parts = os.path.basename(old_dir).split("_")
             pid = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
         except (ValueError, IndexError):
             pid = 0
         if pid == my_pid:
-            continue  # 当前进程目录，由 _get_driver 管理
+            continue
         if pid and pid != 0:
             try:
-                os.kill(pid, 0)       # 进程存活 → 跳过
+                os.kill(pid, 0)       # Unix: 进程存活 → 跳过
                 continue
             except OSError:
                 pass                  # 进程已死 → 清理
-        _kill_chrome_proc(old_dir)
+        _rm_old_dir(old_dir)
 
 
 def _get_driver():
@@ -279,8 +286,8 @@ def _get_driver():
                 except Exception:
                     pass
                 _driver = None
-                _user_data_dir = None
-                _kill_chrome_proc(old_dir)  # 确保旧 Chrome 进程被杀、目录被删
+                _kill_driver_tree()
+                _rm_old_dir(old_dir)
         if _driver is None:
             _cleanup_stale_dirs()     # 首次/重建时清理历史残留
             _driver = _setup_chrome()
@@ -293,8 +300,8 @@ def _get_driver():
                 except Exception:
                     pass
                 _driver = None
-                _user_data_dir = None
-                _kill_chrome_proc(old_dir)
+                _kill_driver_tree()
+                _rm_old_dir(old_dir)
                 raise
     return _driver
 
@@ -310,8 +317,8 @@ def _reset_driver():
             except Exception:
                 pass
             _driver = None
-        _user_data_dir = None
-        _kill_chrome_proc(old_dir)
+        _kill_driver_tree()
+        _rm_old_dir(old_dir)
 
 
 def _close_driver():
@@ -354,7 +361,7 @@ def _start_heartbeat(interval=120):
 # -----------------------------------------------------------
 
 def _setup_chrome(headless=False):
-    global _user_data_dir
+    global _user_data_dir, _service_pid
 
     cp = cfg["ig_chrome_path"]
     cdp = cfg["ig_chromedriver_path"]
@@ -362,9 +369,10 @@ def _setup_chrome(headless=False):
         raise RuntimeError("IG_CHROME_PATH and IG_CHROMEDRIVER_PATH must be set")
 
     # 清理同进程上一次可能残留的旧目录（进程 PID 不变，但 driver 可能被重建）
+    import tempfile, glob as _glob, shutil as _shutil
     my_pid = os.getpid()
-    import glob as _glob, shutil as _shutil
-    for old in _glob.glob(f"/tmp/chrome_ig_{my_pid}_*"):
+    tmpdir = tempfile.gettempdir()
+    for old in _glob.glob(os.path.join(tmpdir, f"chrome_ig_{my_pid}_*")):
         try:
             _shutil.rmtree(old, ignore_errors=True)
         except Exception:
@@ -399,10 +407,13 @@ def _setup_chrome(headless=False):
         opt.add_argument("--disable-features=VizDisplayCompositor,TranslateUI")
         opt.add_argument("--no-first-run")
         opt.add_argument("--disable-default-apps")
-    opt.add_argument(f"--user-data-dir=/tmp/chrome_ig_{os.getpid()}_{int(time.time())}")
-    _user_data_dir = f"/tmp/chrome_ig_{os.getpid()}_{int(time.time())}"
+    _user_data_dir = os.path.join(tempfile.gettempdir(),
+                                   f"chrome_ig_{os.getpid()}_{int(time.time())}")
+    opt.add_argument(f"--user-data-dir={_user_data_dir}")
 
     driver = webdriver.Chrome(service=Service(executable_path=cdp), options=opt)
+    _service_pid = driver.service.process.pid
+    logger.info(f"Chrome started, user-data-dir={_user_data_dir}, service_pid={_service_pid}")
     driver.execute_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
