@@ -197,40 +197,126 @@ def _is_full_crawl_done(user_id: str) -> bool:
 
 _driver = None
 _driver_lock = threading.Lock()
+_user_data_dir = None  # 追踪当前 Chrome user-data-dir，用于精准杀进程+删目录
+
+
+def _kill_chrome_proc(user_data_dir: str):
+    """杀掉使用指定目录的 Chrome 进程，然后删除目录。"""
+    if not user_data_dir or not os.path.isdir(user_data_dir):
+        return
+    # 1) fuser -k（Linux 标配，最快）
+    try:
+        import subprocess as _sp
+        _sp.run(["fuser", "-k", user_data_dir],
+                capture_output=True, timeout=10)
+        time.sleep(1.0)
+    except Exception:
+        pass
+    # 2) 兜底：扫 /proc 补刀（fuser 不存在或未杀干净时）
+    try:
+        import glob as _g
+        encoded = user_data_dir.encode()
+        for cmdline_f in _g.glob("/proc/*/cmdline"):
+            try:
+                pid = int(cmdline_f.split("/")[2])
+                with open(cmdline_f, "rb") as f:
+                    if encoded in f.read():
+                        os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+        time.sleep(0.8)
+        for cmdline_f in _g.glob("/proc/*/cmdline"):
+            try:
+                pid = int(cmdline_f.split("/")[2])
+                with open(cmdline_f, "rb") as f:
+                    if encoded in f.read():
+                        os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # 3) 删除目录
+    try:
+        import shutil as _sh
+        _sh.rmtree(user_data_dir, ignore_errors=True)
+        logger.info(f"Cleaned up old Chrome dir: {user_data_dir}")
+    except Exception:
+        pass
+
+
+def _cleanup_stale_dirs():
+    """启动时一次性清理：删除已死进程残留的 chrome_x_* 目录，并杀关联 Chrome 进程。"""
+    import glob as _g
+    my_pid = os.getpid()
+    for old_dir in _g.glob("/tmp/chrome_x_*"):
+        try:
+            parts = os.path.basename(old_dir).split("_")
+            pid = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
+        except (ValueError, IndexError):
+            pid = 0
+        if pid == my_pid:
+            continue  # 当前进程目录，由 _get_driver 管理
+        if pid and pid != 0:
+            try:
+                os.kill(pid, 0)       # 进程存活 → 跳过
+                continue
+            except OSError:
+                pass                  # 进程已死 → 清理
+        _kill_chrome_proc(old_dir)
+
 
 def _get_driver():
-    global _driver
+    """获取或创建 Chrome 实例（已登录），崩溃后自动重建并清理旧进程"""
+    global _driver, _user_data_dir
     with _driver_lock:
         if _driver is not None:
             try:
-                _driver.current_url
+                _driver.current_url  # 探测连接是否存活
             except Exception:
                 logger.warning("Chrome connection lost, recreating driver")
+                old_dir = _user_data_dir
                 try:
                     _driver.quit()
                 except Exception:
                     pass
                 _driver = None
+                _user_data_dir = None
+                _kill_chrome_proc(old_dir)  # 确保旧 Chrome 进程被杀、目录被删
         if _driver is None:
+            _cleanup_stale_dirs()     # 首次/重建时清理历史残留
             _driver = _setup_chrome()
-            _ensure_login(_driver)
+            try:
+                _ensure_login(_driver)
+            except Exception:
+                old_dir = _user_data_dir
+                try:
+                    _driver.quit()
+                except Exception:
+                    pass
+                _driver = None
+                _user_data_dir = None
+                _kill_chrome_proc(old_dir)
+                raise
     return _driver
 
-def _close_driver():
-    global _driver
+
+def _reset_driver():
+    """强制重置 driver（Chrome 崩溃后调用），只清理自己的进程和目录"""
+    global _driver, _user_data_dir
     with _driver_lock:
+        old_dir = _user_data_dir
         if _driver:
-            try:
-                import glob as _glob, shutil as _shutil
-                for d in _glob.glob("/tmp/chrome_x_*"):
-                    _shutil.rmtree(d, ignore_errors=True)
-            except Exception:
-                pass
             try:
                 _driver.quit()
             except Exception:
                 pass
             _driver = None
+        _user_data_dir = None
+        _kill_chrome_proc(old_dir)
+
+
+def _close_driver():
+    _reset_driver()
 
 
 # -----------------------------------------------------------
@@ -269,20 +355,17 @@ def _start_heartbeat(interval=120):
 # -----------------------------------------------------------
 
 def _setup_chrome(headless=False):
+    global _user_data_dir
+
     cp = cfg["ig_chrome_path"]
     cdp = cfg["ig_chromedriver_path"]
     if not cp or not cdp:
         raise RuntimeError("IG_CHROME_PATH and IG_CHROMEDRIVER_PATH must be set")
 
+    # 清理同进程上一次可能残留的旧目录（进程 PID 不变，但 driver 可能被重建）
+    my_pid = os.getpid()
     import glob as _glob, shutil as _shutil
-    for old in _glob.glob("/tmp/chrome_x_*") + _glob.glob("/tmp/chrome_ig_*"):
-        try:
-            parts = os.path.basename(old).split("_")
-            pid = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
-            if pid and os.kill(pid, 0):
-                continue
-        except (OSError, ValueError, IndexError):
-            pass
+    for old in _glob.glob(f"/tmp/chrome_x_{my_pid}_*"):
         try:
             _shutil.rmtree(old, ignore_errors=True)
         except Exception:
@@ -316,6 +399,7 @@ def _setup_chrome(headless=False):
         opt.add_argument("--no-first-run")
         opt.add_argument("--disable-default-apps")
     opt.add_argument(f"--user-data-dir=/tmp/chrome_x_{os.getpid()}_{int(time.time())}")
+    _user_data_dir = f"/tmp/chrome_x_{os.getpid()}_{int(time.time())}"
 
     driver = webdriver.Chrome(service=Service(executable_path=cdp), options=opt)
     driver.execute_script(
