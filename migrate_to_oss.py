@@ -44,13 +44,14 @@ print(f"迁移前缀: {args.prefix or '(全部)'}")
 print(f"并发数: {args.threads}")
 print()
 
-# 收集所有文件
+# 收集所有文件（rel 路径统一用 /，兼容 Windows \ 分隔符）
+prefix = args.prefix.replace("\\", "/") if args.prefix else ""
 files = []
 for root, dirs, filenames in os.walk(base):
     for f in filenames:
         full = os.path.join(root, f)
-        rel = os.path.relpath(full, base)
-        if not args.prefix or rel.startswith(args.prefix):
+        rel = os.path.relpath(full, base).replace("\\", "/")
+        if not prefix or rel.startswith(prefix):
             files.append((full, rel))
 
 total_size = sum(os.path.getsize(f) for f, _ in files)
