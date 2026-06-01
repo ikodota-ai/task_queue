@@ -998,7 +998,7 @@ def main():
         queue_names = ["crawl:x:incr"]
         worker_id = "x-crawler-incr"
     else:
-        queue_names = ["crawl:x:full", "crawl:x:incr"]
+        queue_names = ["crawl:x:incr", "crawl:x:full"]
         worker_id = "x-crawler"
 
     logging.basicConfig(
