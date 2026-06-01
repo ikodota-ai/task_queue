@@ -845,7 +845,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             no_new = 0
         else:
             no_new += 1
-            if incremental and no_new >= 5:
+            if incremental and no_new >= 2:
                 logger.info("No new tweets for 5 scrolls, boundary reached")
                 break
 

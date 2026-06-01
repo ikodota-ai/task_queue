@@ -990,7 +990,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         else:
             no_new += 1
             # 增量模式：连滚 5 次无新帖 = 已碰到全量边界，停止
-            if incremental and no_new >= 5:
+            if incremental and no_new >= 2:
                 logger.info("No new posts for 5 scrolls, boundary reached")
                 break
         # 滚动
