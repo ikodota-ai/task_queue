@@ -529,41 +529,18 @@ def _extract_tweet_id(url):
     m = _re_tweet_id.search(url)
     return m.group(1) if m else None
 
-def _fix_image_url(url):
-    """将缩略图 URL 转为原图 URL"""
+def _is_valid_image(url: str) -> bool:
+    """过滤掉头像/表情/视频封面等非内容图片。"""
     if not url:
-        return None
-    if "profile_images" in url or "emoji" in url or "video_thumb" in url:
-        return None
-    base = url.split("?")[0]
-    if base.endswith((".jpg", ".jpeg")):
-        return f"{base}?format=jpg&name=orig"
-    elif base.endswith(".png"):
-        return f"{base}?format=png&name=orig"
-    else:
-        return f"{base}?format=jpg&name=orig"
-
-
-def _has_gallery_icon(link) -> bool:
-    """检测列表页推文链接内是否包含多图 SVG 图标"""
-    try:
-        svg = link.find_elements(By.XPATH, ".//*[local-name()='svg']")
-        return len(svg) > 0
-    except Exception:
         return False
-
-
-def _extract_grid_thumbnail(link) -> Optional[str]:
-    """单图推文：从列表页网格提取缩略图 URL 转原图"""
-    try:
-        img = link.find_element(By.XPATH, ".//img")
-        return _fix_image_url(img.get_attribute("src"))
-    except Exception:
-        return None
+    for bad in ("profile_images", "emoji", "video_thumb"):
+        if bad in url:
+            return False
+    return True
 
 
 # -----------------------------------------------------------
-# 多图帖子：点击弹框 → 翻页取所有图片
+# 点击推文 → 弹窗打开 → 翻页取所有图片
 # -----------------------------------------------------------
 
 def _extract_carousel_images(driver, link) -> List[str]:
@@ -596,10 +573,10 @@ def _extract_images_from_tweet(driver) -> List[str]:
             "//article//img[contains(@src, 'pbs.twimg.com')]",
         ):
             for img in driver.find_elements(By.XPATH, xp):
-                fixed = _fix_image_url(img.get_attribute("src"))
-                if fixed and fixed not in seen:
-                    seen.add(fixed)
-                    images.append(fixed)
+                src = img.get_attribute("src")
+                if _is_valid_image(src) and src not in seen:
+                    seen.add(src)
+                    images.append(src)
 
     
     _grab()
@@ -799,6 +776,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 
             # 跳过已处理
             if cursor_url is None and _is_processed(user_id, tweet_id):
+                logger.debug(f"  Skip already processed: {tweet_id}")
                 continue
 
             # ---- 提取图片：在页面上找到对应 link 元素点击 ----
