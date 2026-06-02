@@ -3,9 +3,15 @@
 用法: python monitor.py (默认 http://0.0.0.0:5000)
 """
 import json
+import logging
+import os as _os
+import subprocess
+import threading
 import time
+import uuid as _uuid
 from collections import defaultdict
-from flask import Flask, jsonify
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request
 
 import pymysql
 import redis
@@ -70,6 +76,179 @@ def api_enqueue():
         "queue_name": queue_name,
         "redis_task_id": tid,
     })
+
+
+# ============================================================
+# 调度管理 API
+# ============================================================
+
+def _sched_redis():
+    return redis.Redis(
+        host=cfg["queue_redis_host"], port=cfg["queue_redis_port"],
+        password=cfg["queue_redis_password"], db=cfg["queue_redis_db"],
+        decode_responses=True, socket_timeout=5,
+    )
+
+
+def _cron_match(value, pattern):
+    if pattern == "*":
+        return True
+    if "/" in pattern:
+        _, step = pattern.split("/")
+        return value % int(step) == 0
+    for p in pattern.split(","):
+        if str(value) == p.strip():
+            return True
+    return False
+
+
+def _cron_next(cron_expr, from_ts=None):
+    """简单 cron 解析，返回下次执行时间戳。空=一次性调度。"""
+    if not cron_expr or not cron_expr.strip():
+        return None
+    parts = cron_expr.strip().split()
+    if len(parts) != 5:
+        return None
+    minute, hour, day, month, weekday = parts
+    now = datetime.fromtimestamp(from_ts or time.time()) + timedelta(minutes=1)
+    for _ in range(525600):  # 最多往后找一年
+        if (_cron_match(now.minute, minute) and _cron_match(now.hour, hour) and
+                _cron_match(now.day, day) and _cron_match(now.month, month) and
+                _cron_match(now.weekday(), weekday)):
+            return int(now.timestamp())
+        now += timedelta(minutes=1)
+    return None
+
+
+def _exec_schedule(sid, s):
+    cmd = s.get("command", "")
+    args = s.get("args", "")
+    script = f"{cmd}.py"
+    full_cmd = f"python {script} {args}"
+    cwd = _os.path.dirname(_os.path.abspath(__file__))
+    logger_sched = logging.getLogger("ScheduleRunner")
+    logger_sched.info(f"Exec [{s.get('name')}] → {full_cmd}")
+    try:
+        subprocess.Popen(full_cmd, shell=True, cwd=cwd)
+    except Exception as e:
+        logger_sched.error(f"Exec failed: {e}")
+
+    r = _sched_redis()
+    now = int(time.time())
+    r.hset(f"schedule:{sid}", "last_run", str(now))
+    cron = s.get("cron", "")
+    if cron and cron.strip():
+        next_ts = _cron_next(cron, now)
+        r.hset(f"schedule:{sid}", "next_run", str(next_ts or 0))
+    else:
+        r.hset(f"schedule:{sid}", mapping={"enabled": "0", "next_run": "0"})
+
+
+def start_schedule_runner():
+    """后台线程：每 30 秒扫描到期调度并执行"""
+    logger_sched = logging.getLogger("ScheduleRunner")
+    logger_sched.info("Schedule runner started")
+
+    def _loop():
+        while True:
+            try:
+                r = _sched_redis()
+                ids = r.smembers("schedule:index")
+                now = int(time.time())
+                for sid in ids:
+                    s = r.hgetall(f"schedule:{sid}")
+                    if not s or s.get("enabled") != "1":
+                        continue
+                    next_run = int(s.get("next_run", 0))
+                    if next_run == 0:
+                        cron = s.get("cron", "")
+                        if cron and cron.strip():
+                            next_ts = _cron_next(cron, now)
+                            r.hset(f"schedule:{sid}", "next_run", str(next_ts or 0))
+                        continue
+                    if next_run > now:
+                        continue
+                    _exec_schedule(sid, s)
+                r.close()
+            except Exception as e:
+                logger_sched.error(f"Runner loop error: {e}")
+            time.sleep(30)
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+@app.route("/api/schedules", methods=["GET"])
+def api_schedules():
+    r = _sched_redis()
+    ids = r.smembers("schedule:index")
+    schedules = []
+    for sid in ids:
+        s = r.hgetall(f"schedule:{sid}")
+        if s:
+            s["id"] = sid
+            schedules.append(s)
+    schedules.sort(key=lambda x: x.get("name", ""))
+    return jsonify(schedules)
+
+
+@app.route("/api/schedules", methods=["POST"])
+def api_schedule_create():
+    data = request.get_json() or {}
+    sid = _uuid.uuid4().hex[:8]
+    r = _sched_redis()
+    now = int(time.time())
+    cron = data.get("cron", "").strip()
+    r.hset(f"schedule:{sid}", mapping={
+        "name":    data.get("name", ""),
+        "command": data.get("command", ""),
+        "args":    data.get("args", ""),
+        "queue":   data.get("queue", ""),
+        "cron":    cron,
+        "enabled": data.get("enabled", "1"),
+        "created": str(now),
+        "last_run": "0",
+        "next_run": str(_cron_next(cron, now) or 0),
+    })
+    r.sadd("schedule:index", sid)
+    return jsonify({"ok": True, "id": sid})
+
+
+@app.route("/api/schedules/<sid>", methods=["PUT"])
+def api_schedule_update(sid):
+    r = _sched_redis()
+    if not r.sismember("schedule:index", sid):
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json() or {}
+    cron = data.get("cron", "").strip()
+    now = int(time.time())
+    r.hset(f"schedule:{sid}", mapping={
+        "name":    data.get("name", ""),
+        "command": data.get("command", ""),
+        "args":    data.get("args", ""),
+        "queue":   data.get("queue", ""),
+        "cron":    cron,
+        "enabled": data.get("enabled", "1"),
+        "next_run": str(_cron_next(cron, now) or 0),
+    })
+    return jsonify({"ok": True})
+
+
+@app.route("/api/schedules/<sid>", methods=["DELETE"])
+def api_schedule_delete(sid):
+    r = _sched_redis()
+    r.delete(f"schedule:{sid}")
+    r.srem("schedule:index", sid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/schedules/<sid>/run", methods=["POST"])
+def api_schedule_run_now(sid):
+    r = _sched_redis()
+    s = r.hgetall(f"schedule:{sid}")
+    if not s:
+        return jsonify({"error": "not found"}), 404
+    _exec_schedule(sid, s)
+    return jsonify({"ok": True})
 
 
 def _get_db():
@@ -417,7 +596,94 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
   </div>
 </div>
 
+<div class="row" style="margin-top:8px">
+  <div style="flex:1">
+    <h2>&#x1f4c5; 调度管理 <button onclick="schedAdd()" style="background:#5af;color:#000;border:none;padding:2px 8px;border-radius:3px;font-size:11px;cursor:pointer">+ 新增</button></h2>
+    <table id="sched-table"><tr><th>名称</th><th>命令</th><th>参数</th><th>周期</th><th>状态</th><th>上次</th><th>下次</th><th>操作</th></tr></table>
+  </div>
+</div>
+
+<!-- 调度编辑弹窗 -->
+<div id="sched-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999">
+<div style="background:#162636;margin:80px auto;padding:16px;width:520px;border-radius:6px;max-height:80vh;overflow:auto">
+<h3 id="sched-modal-title" style="color:#5af;margin-bottom:10px">新增调度</h3>
+<div style="display:flex;flex-direction:column;gap:8px">
+  <div><label style="color:#6a8a9e;font-size:11px">名称</label><input id="sched-name" style="width:100%;background:#0d1a25;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px"></div>
+  <div><label style="color:#6a8a9e;font-size:11px">命令 (Python脚本,不含.py)</label><input id="sched-cmd" style="width:100%;background:#0d1a25;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px" placeholder="scheduler / new_user_enqueue / batch_enqueue"></div>
+  <div><label style="color:#6a8a9e;font-size:11px">参数</label><input id="sched-args" style="width:100%;background:#0d1a25;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px" placeholder="--platform ig --interval 21600"></div>
+  <div><label style="color:#6a8a9e;font-size:11px">Cron (留空=一次性) <a href="#" onclick="alert('分 时 日 月 周\\n*/30 * * * * = 每30分钟\\n0 */6 * * * = 每6小时\\n0 8 * * * = 每天8点')" style="color:#5af;font-size:10px">帮助</a></label><input id="sched-cron" style="width:100%;background:#0d1a25;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px" placeholder="0 */6 * * *"></div>
+  <div><label style="color:#6a8a9e;font-size:11px">启用</label>
+    <select id="sched-enabled" style="background:#0d1a25;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px">
+      <option value="1">是</option><option value="0">否</option>
+    </select>
+  </div>
+  <div style="display:flex;gap:6px;margin-top:8px">
+    <button onclick="schedSave()" style="background:#5af;color:#000;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-weight:bold">保存</button>
+    <button onclick="document.getElementById('sched-modal').style.display='none'" style="background:#444;color:#bcc8d4;border:none;padding:4px 12px;border-radius:3px;cursor:pointer">取消</button>
+  </div>
+</div>
+</div></div>
+
 <script>
+let schedEditingId = null;
+
+async function loadSchedules(){
+  try{
+    const r = await fetch('/api/schedules');
+    const schedules = await r.json();
+    let h = '<tr><th>名称</th><th>命令</th><th>参数</th><th>周期</th><th>状态</th><th>上次</th><th>下次</th><th>操作</th></tr>';
+    for(const s of schedules){
+      const en = s.enabled === '1';
+      const cron = s.cron || '一次性';
+      const last = s.last_run && s.last_run!=='0' ? new Date(parseInt(s.last_run)*1000).toLocaleTimeString() : '-';
+      const next = s.next_run && s.next_run!=='0' && en ? new Date(parseInt(s.next_run)*1000).toLocaleString() : (cron==='一次性'?'-':'待计算');
+      h += `<tr>
+        <td>${s.name||'-'}</td><td>${s.command||'-'}</td>
+        <td style="font-size:10px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(s.args||'')}">${(s.args||'-').substring(0,30)}</td>
+        <td style="color:${cron==='一次性'?'#6a8a9e':'#5af'}">${cron}</td>
+        <td><span class="${en?'alive':'dead'}">${en?'启用':'停用'}</span></td>
+        <td>${last}</td><td style="font-size:10px">${next}</td>
+        <td style="white-space:nowrap">
+          <button onclick="schedRun('${s.id}')" style="background:#5e5;color:#fff;border:none;padding:1px 6px;border-radius:2px;cursor:pointer;font-size:10px" title="立即执行">▶</button>
+          <button onclick="schedEdit('${s.id}')" style="background:#59f;color:#000;border:none;padding:1px 6px;border-radius:2px;cursor:pointer;font-size:10px;margin-left:2px">✎</button>
+          <button onclick="schedToggle('${s.id}',${en})" style="background:${en?'#e55':'#5e5'};color:#fff;border:none;padding:1px 6px;border-radius:2px;cursor:pointer;font-size:10px;margin-left:2px">${en?'⏸':'▶'}</button>
+          <button onclick="schedDel('${s.id}')" style="background:#e55;color:#fff;border:none;padding:1px 6px;border-radius:2px;cursor:pointer;font-size:10px;margin-left:2px">✕</button>
+        </td>
+      </tr>`;
+    }
+    document.getElementById('sched-table').innerHTML = h || '<tr><td colspan=8>暂无调度</td></tr>';
+  }catch(e){}
+}
+
+function schedAdd(){ schedEditingId=null; document.getElementById('sched-modal-title').innerText='新增调度';
+  ['name','cmd','args','cron'].forEach(f=>document.getElementById('sched-'+f).value='');
+  document.getElementById('sched-enabled').value='1';
+  document.getElementById('sched-modal').style.display='block'; }
+async function schedEdit(id){
+  const r=await fetch('/api/schedules'); const all=await r.json();
+  const s=all.find(x=>x.id===id); if(!s)return;
+  schedEditingId=id; document.getElementById('sched-modal-title').innerText='编辑调度';
+  document.getElementById('sched-name').value=s.name||'';
+  document.getElementById('sched-cmd').value=s.command||'';
+  document.getElementById('sched-args').value=s.args||'';
+  document.getElementById('sched-cron').value=s.cron||'';
+  document.getElementById('sched-enabled').value=s.enabled||'1';
+  document.getElementById('sched-modal').style.display='block'; }
+async function schedSave(){
+  const data={name:document.getElementById('sched-name').value,command:document.getElementById('sched-cmd').value,
+    args:document.getElementById('sched-args').value,cron:document.getElementById('sched-cron').value,
+    enabled:document.getElementById('sched-enabled').value};
+  if(!data.name||!data.command){alert('名称和命令必填');return;}
+  if(schedEditingId){await fetch('/api/schedules/'+schedEditingId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
+  else{await fetch('/api/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
+  document.getElementById('sched-modal').style.display='none'; loadSchedules(); }
+async function schedDel(id){ if(!confirm('确定删除?'))return; await fetch('/api/schedules/'+id,{method:'DELETE'}); loadSchedules(); }
+async function schedRun(id){ await fetch('/api/schedules/'+id+'/run',{method:'POST'}); }
+async function schedToggle(id,en){
+  const r=await fetch('/api/schedules'); const all=await r.json(); const s=all.find(x=>x.id===id); if(!s)return;
+  s.enabled=en?'0':'1'; await fetch('/api/schedules/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});
+  loadSchedules(); }
+
 async function refresh(){
   try {
     const r = await fetch('/api/status');
@@ -528,7 +794,9 @@ async function enqueue(){
   return false;
 }
 refresh();
+loadSchedules();
 setInterval(refresh, 4000);
+setInterval(loadSchedules, 15000);
 </script>
 </body>
 </html>"""
@@ -540,4 +808,6 @@ def index():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    start_schedule_runner()
     app.run(host="0.0.0.0", port=5000, debug=False)
