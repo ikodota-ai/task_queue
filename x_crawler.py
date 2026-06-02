@@ -130,7 +130,8 @@ def _mark_full_done_db(user_id: str, maxpage: int, platform: str = "x"):
         logger.error(f"Failed to update DB full_done for {user_id}: {e}")
 
 
-def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str, source: str = "x") -> int:
+def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str,
+                            source: str = "x", post_ts: int = None) -> int:
     db = _get_db()
     try:
         cur = db.cursor()
@@ -138,7 +139,7 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
             f"INSERT IGNORE INTO {cfg['table_prefix']}star_instagram "
             "(star_id, check_code, image, batch, status, source, create_time) "
             "VALUES (%s, %s, %s, %s, 'N', %s, %s)",
-            (star_id, check_code, image, batch, source, int(time.time())),
+            (star_id, check_code, image, batch, source, post_ts or int(time.time())),
         )
         db.commit()
         return cur.lastrowid
@@ -543,29 +544,45 @@ def _is_valid_image(url: str) -> bool:
 # 点击推文 → 弹窗打开 → 翻页取所有图片
 # -----------------------------------------------------------
 
-def _extract_carousel_images(driver, link) -> List[str]:
-    """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗"""
+def _extract_carousel_images(driver, link) -> tuple:
+    """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗。返回 (images, post_ts)。"""
     try:
         link.click()
     except Exception:
-        return []
+        return [], None
     time.sleep(2)
-    images = _extract_images_from_tweet(driver)
+    images, post_ts = _extract_images_from_tweet(driver)
     if not images:
-        # 即使没图也要关弹窗
         _close_modal(driver)
-    return images
+    return images, post_ts
 
 
-def _extract_images_from_tweet(driver) -> List[str]:
-    """在已打开的弹窗中翻页取图，最后关闭弹窗"""
+def _extract_post_timestamp(driver):
+    """从弹窗中提取推文日期 (document.querySelector('article time').dateTime) 转为 Unix 时间戳。"""
+    try:
+        el = driver.find_element(By.XPATH, "//article//time")
+        dt_str = el.get_attribute("datetime")
+        if dt_str:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+    except Exception:
+        pass
+    return None
+
+
+def _extract_images_from_tweet(driver) -> tuple:
+    """在已打开的弹窗中翻页取图，返回 (images, post_ts)。"""
+    # 等弹窗加载（carousel 可能不存在 — 单图推文没有翻页按钮）
     try:
         WebDriverWait(driver, 3).until(
-            EC.presence_of_element_located((By.XPATH, "//div[@aria-roledescription='carousel']"))
+            EC.presence_of_element_located((By.XPATH, "//article"))
         )
     except Exception:
-        return []
+        return [], None
+
     images, seen = [], set()
+    post_ts = _extract_post_timestamp(driver)
 
     def _grab():
         for xp in (
@@ -607,7 +624,7 @@ def _extract_images_from_tweet(driver) -> List[str]:
                 break
 
     _close_modal(driver)
-    return images
+    return images, post_ts
 
 
 def _close_modal(driver):
@@ -786,7 +803,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             except Exception:
                 continue
 
-            image_urls = _extract_carousel_images(driver, link_el)
+            image_urls, post_ts = _extract_carousel_images(driver, link_el)
 
             if not image_urls:
                 _mark_processed(user_id, tweet_id)
@@ -802,7 +819,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                     try:
                         db_id = _insert_star_instagram(
                             star_id, f"x/image/{star_id}/{check_code}{ext}",
-                            batch, check_code, "x"
+                            batch, check_code, "x", post_ts
                         )
                         save_path = f"x/image/{star_id}/{check_code}{ext}"
                     except Exception as e:
