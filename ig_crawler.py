@@ -200,6 +200,7 @@ _driver_lock = threading.Lock()
 _user_data_dir = None   # 当前 Chrome user-data-dir
 _service_pid = None      # chromedriver 进程 PID，用于跨平台杀进程树
 _stop_requested = False  # 优雅中断：Ctrl+C 时置 True，_do_crawl 检测后提前退出
+_force_headless = None   # None=读 .env, True=强制headless, False=强制有头
 
 
 def _kill_driver_tree():
@@ -401,7 +402,14 @@ def _setup_chrome(headless=False):
     opt.add_argument("--disable-component-extensions-with-background-pages")
     opt.add_argument("--disable-ipc-flooding-protection")
     opt.add_argument("--window-size=1920,1080")
-    if headless or os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
+    # 参数优先 → 环境变量兜底
+    use_headless = headless
+    if _force_headless is not None:
+        use_headless = _force_headless
+    elif os.getenv("CHROME_HEADLESS", "") in ("1", "true", "yes"):
+        use_headless = True
+
+    if use_headless:
         opt.add_argument("--headless=new")
         opt.add_argument("--disable-gpu")
         opt.add_argument("--no-zygote")
@@ -1105,7 +1113,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("full", "incr", "all"), default="all",
                         help="full=全量, incr=增量, all=全量+增量")
+    parser.add_argument("--headless", dest="headless", action="store_const", const=True,
+                        help="强制 headless 模式")
+    parser.add_argument("--no-headless", dest="headless", action="store_const", const=False,
+                        help="强制有头模式（调试用，覆盖 .env）")
     opt_args = parser.parse_args()
+
+    global _force_headless
+    if opt_args.headless is not None:
+        _force_headless = opt_args.headless
 
     if opt_args.mode == "full":
         queue_names = ["crawl:ig:full"]
