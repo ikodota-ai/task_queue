@@ -104,12 +104,11 @@ def run(platform: str, maxpage: int, dry_run: bool = False, limit: int = 0):
         queue_name = conf["queue"]
         func_name = conf["func"]
 
-        # 1. 查 la_star_info 中有账号的所有用户
+        # 1. 查 la_star_info 中有账号的所有用户（不限国家）
         cur.execute(f"""
-            SELECT id as star_id, {field} as username, country
+            SELECT id as star_id, {field} as username
             FROM la_star_info
-            WHERE country != 5
-              AND {field} IS NOT NULL AND {field} != ''
+            WHERE {field} IS NOT NULL AND {field} != ''
             ORDER BY id
         """)
         rows = cur.fetchall()
@@ -199,8 +198,8 @@ def main():
     parser.add_argument("--platform", type=str, default="ig",
                         choices=["ig", "x", "all"],
                         help="平台 (default: ig)")
-    parser.add_argument("--maxpage", type=int, default=30,
-                        help="全量最大翻页数 (default: 30)")
+    parser.add_argument("--maxpage", type=int, default=10,
+                        help="首次全量最大翻页数 (default: 10)")
     parser.add_argument("--dry-run", action="store_true",
                         help="只显示不实际入队")
     parser.add_argument("--limit", type=int, default=0,
