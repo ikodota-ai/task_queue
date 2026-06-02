@@ -6,7 +6,6 @@ import json
 import logging
 import os as _os
 import subprocess
-import threading
 import time
 import uuid as _uuid
 from collections import defaultdict
@@ -142,39 +141,6 @@ def _exec_schedule(sid, s):
         r.hset(f"schedule:{sid}", "next_run", str(next_ts or 0))
     else:
         r.hset(f"schedule:{sid}", mapping={"enabled": "0", "next_run": "0"})
-
-
-def start_schedule_runner():
-    """后台线程：每 30 秒扫描到期调度并执行"""
-    logger_sched = logging.getLogger("ScheduleRunner")
-    logger_sched.info("Schedule runner started")
-
-    def _loop():
-        while True:
-            try:
-                r = _sched_redis()
-                ids = r.smembers("schedule:index")
-                now = int(time.time())
-                for sid in ids:
-                    s = r.hgetall(f"schedule:{sid}")
-                    if not s or s.get("enabled") != "1":
-                        continue
-                    next_run = int(s.get("next_run", 0))
-                    if next_run == 0:
-                        cron = s.get("cron", "")
-                        if cron and cron.strip():
-                            next_ts = _cron_next(cron, now)
-                            r.hset(f"schedule:{sid}", "next_run", str(next_ts or 0))
-                        continue
-                    if next_run > now:
-                        continue
-                    _exec_schedule(sid, s)
-                r.close()
-            except Exception as e:
-                logger_sched.error(f"Runner loop error: {e}")
-            time.sleep(30)
-
-    threading.Thread(target=_loop, daemon=True).start()
 
 
 @app.route("/api/schedules", methods=["GET"])
@@ -809,5 +775,4 @@ def index():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    start_schedule_runner()
     app.run(host="0.0.0.0", port=5000, debug=False)
