@@ -816,8 +816,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     processed = 0
 
     if not _navigate_to_user(driver, user_id):
-        logger.error("Navigation failed, aborting crawl")
-        return 0
+        raise RuntimeError(f"Navigation to {user_id} failed (cookie expired or network error)")
 
     try:
         WebDriverWait(driver, 5).until(
