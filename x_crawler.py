@@ -546,11 +546,20 @@ def _is_valid_image(url: str) -> bool:
 
 def _extract_carousel_images(driver, link) -> tuple:
     """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗。返回 (images, post_ts)。"""
+    grid_url = driver.current_url
     try:
         link.click()
     except Exception:
         return [], None
     time.sleep(2)
+
+    # 如果 URL 变了且不含 'photo'，说明点进了推文详情页而不是弹窗 → 后退
+    if driver.current_url != grid_url and "photo" not in driver.current_url:
+        logger.warning(f"Navigated to tweet page instead of modal, going back")
+        driver.back()
+        time.sleep(2)
+        return [], None
+
     images, post_ts = _extract_images_from_tweet(driver)
     if not images:
         _close_modal(driver)
@@ -597,7 +606,6 @@ def _extract_images_from_tweet(driver) -> tuple:
 
     
     _grab()
-    logger.info(f"  Tweet modal opened, initial: {len(images)} images")
 
     no_new_streak = 0
     for _ in range(50):
@@ -624,6 +632,7 @@ def _extract_images_from_tweet(driver) -> tuple:
                 break
 
     _close_modal(driver)
+    logger.info(f"  Tweet: {len(images)} image(s)")
     return images, post_ts
 
 
@@ -756,7 +765,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             By.XPATH,
             "//section[@role='region']//li[@role='listitem']//a",
         )
-        logger.info(f"Scroll {scroll_idx+1}: {len(links)} tweet links on page")
+        logger.info(f"Scroll {scroll_idx+1}/{maxpage}: {len(links)} links, height={prev_height}")
 
         new_found = 0
 
