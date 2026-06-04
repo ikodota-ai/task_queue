@@ -766,9 +766,12 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 
     state = _state_redis().hgetall(_skey(user_id))
 
-    # 全量已完成检查：full_done=1 且 last_maxpage >= 本次目标则跳过
+    # 全量已完成检查：reached_bottom=1 直接跳过；否则 full_done=1 且 maxpage 够大才跳过
     if not incremental:
         saved_maxpage = int(state.get("last_maxpage") or state.get("maxpage") or 0)
+        if state.get("reached_bottom") == "1":
+            logger.info(f"Full crawl for {user_id}: reached_bottom=1, fully done, skipping")
+            return 0
         if state.get("full_done") == "1" and saved_maxpage >= maxpage:
             logger.info(f"Full crawl for {user_id}: full_done=1, last_maxpage {saved_maxpage} >= target {maxpage}, skipping")
             return 0
@@ -987,19 +990,24 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     # 已完成，清除进度
     _state_redis().hdel(_skey(user_id), "posts_done")
 
-    # 全量完成时写入 last_maxpage 和 full_done（增量不写）
+    # 全量完成时写入状态（增量不写这些字段）
     actual_pages = scroll_idx + 1
     if same_height >= 10:
         logger.info(f"Reached bottom at page {actual_pages}")
         if not incremental:
-            _state_redis().hset(_skey(user_id), "last_maxpage", str(maxpage))
-            _state_redis().hset(_skey(user_id), "full_done", "1")
+            _state_redis().hset(_skey(user_id), mapping={
+                "last_maxpage": str(maxpage),
+                "full_done": "1",
+                "reached_bottom": "1",
+            })
             _mark_full_done_db(user_id, maxpage, "ig")
     else:
         logger.info(f"Reached maxpage limit ({maxpage} pages)")
         if not incremental:
-            _state_redis().hset(_skey(user_id), "last_maxpage", str(maxpage))
-            _state_redis().hset(_skey(user_id), "full_done", "1")
+            _state_redis().hset(_skey(user_id), mapping={
+                "last_maxpage": str(maxpage),
+                "full_done": "1",
+            })
             _mark_full_done_db(user_id, maxpage, "ig")
 
     if processed:
