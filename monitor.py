@@ -440,7 +440,6 @@ def api_status():
         "active_crawls": active_crawls,
         "completed_crawls": completed_crawls,
         "coverage": coverage,
-        "dl_pending": sum(q["pending"] for q in queues.values() if q["pending"]),
         "task_meta": {"total": tm_total, "by_type": tm_by_q},
         "ts": int(time.time()),
     })
@@ -499,12 +498,7 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
 <h2>&#x21e9; 下载 Worker</h2>
 <table id="dl-table"></table>
 
-<!-- 下载 -->
-<div style="margin-top:6px">
-  <span>&#x21e9; 下载队列: <b id="dl-total" style="color:#fa0">0</b></span>
-  <span id="dl-summary" style="font-size:11px;font-size:1.5rem;color:#6a8a9e;margin-left:10px"></span>
-  <span id="tm-info" style="font-size:10px;font-size:1.5rem;color:#6a8a9e;margin-left:10px"></span>
-</div>
+<span id="tm-info" style="font-size:10px;font-size:1.5rem;color:#6a8a9e;margin-left:10px"></span>
 
 <!-- 手动入队 -->
 <div class="row" style="margin-top:8px">
@@ -687,19 +681,6 @@ async function refresh(){
     document.getElementById('tm-info').innerHTML = tm
       ? `Redis: ${tm.total} 条记录 | IG下载 ${tm.by_type['dl:ig']||0} | X下载 ${tm.by_type['dl:x']||0} | 抓取 ${tm.by_type['crawl']||0}`
       : '';
-
-    // 下载
-    const dli = d.queues['dl:ig']?.pending||0;
-    const dlx = d.queues['dl:x']?.pending||0;
-    document.getElementById('dl-total').innerText = (d.dl_pending||dli+dlx);
-    let ds = `IG: ${dli} 待下载 | X: ${dlx} 待下载 | 处理中: ${d.active_downloads?.length||0}`;
-    if(d.active_downloads?.length){
-      ds += '<br>';
-      for(const dl of d.active_downloads.slice(0,6)){
-        ds += `<span style="font-size:10px;color:#7a9ab0">@${dl.user}/${dl.post}</span> `;
-      }
-    }
-    document.getElementById('dl-summary').innerHTML = ds;
 
     // 最近完成的抓取 (Redis task_meta)
     let rh = '<tr><th>队列</th><th>用户</th><th>任务ID</th></tr>';
