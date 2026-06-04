@@ -232,6 +232,20 @@ def api_status():
         now_ts = int(time.time())
         today_start = now_ts - now_ts % 86400  # 今天 0 点
 
+        def _parse_ts(v):
+            """state 中时间值可能是 Unix 时间戳(浮点/整数字符串)或 ISO 格式，统一转为 int"""
+            if not v:
+                return 0
+            try:
+                return int(float(v))
+            except (ValueError, TypeError):
+                pass
+            try:
+                from datetime import datetime
+                return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp())
+            except Exception:
+                return 0
+
         # ===== 全量/增量/今日覆盖统计（一次扫描 state keys）=====
         full_done_cnt = {"ig": 0, "x": 0}
         incr_24h = {"ig": 0, "x": 0}
@@ -242,16 +256,16 @@ def api_status():
                 data = sr.hgetall(k)
                 if data.get("full_done") == "1":
                     full_done_cnt[plat] += 1
-                incr_last = int(float(data.get("incr_last_time", 0)))
+                incr_last = _parse_ts(data.get("incr_last_time"))
                 if incr_last > now_ts - 86400:
                     incr_24h[plat] += 1
                 if incr_last >= today_start:
                     work[plat]["today_incr"] += 1
-                    work[plat]["today_images"] += int(float(data.get("incr_last_images", 0)))
-                scrape_ts = int(float(data.get("last_scrape_time", 0)))
+                    work[plat]["today_images"] += int(float(data.get("incr_last_images", 0) or 0))
+                scrape_ts = _parse_ts(data.get("last_scrape_time"))
                 if scrape_ts >= today_start:
                     work[plat]["today_users"] += 1
-                    work[plat]["today_images"] += int(float(data.get("last_images", 0)))
+                    work[plat]["today_images"] += int(float(data.get("last_images", 0) or 0))
 
         coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
 
