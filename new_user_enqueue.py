@@ -126,8 +126,7 @@ def run(platform: str, maxpage: int, dry_run: bool = False, limit: int = 0):
         # 3. 去重：已在 full 队列中的
         queue_existing = _existing_queue_users(qr, queue_name)
 
-        # 4. 筛选无 Redis 记录的新用户
-        table = cfg["table_prefix"] + "crawl_tasks"
+        # 4. 筛选无 Redis 记录的新用户，直接入队
         enqueued = 0
 
         for i, row in enumerate(rows):
@@ -147,38 +146,21 @@ def run(platform: str, maxpage: int, dry_run: bool = False, limit: int = 0):
                 enqueued += 1
                 continue
 
-            try:
-                cur.execute(
-                    f"INSERT INTO {table} (platform, task_type, user_id, status) "
-                    "VALUES (%s, 'full', %s, 'pending')",
-                    (plat, username),
-                )
-                db_task_id = cur.lastrowid
+            task_data = {
+                "task_id": str(uuid.uuid4()),
+                "func_name": func_name,
+                "args": [username, 0, maxpage],   # db_task_id=0
+                "kwargs": {},
+                "queue_name": queue_name,
+                "retry_count": 0,
+                "enqueued_at": time.time(),
+            }
+            qr.rpush(f"queue:{queue_name}", json.dumps(task_data))
+            enqueued += 1
 
-                task_data = {
-                    "task_id": str(uuid.uuid4()),
-                    "func_name": func_name,
-                    "args": [username, db_task_id, maxpage],
-                    "kwargs": {},
-                    "queue_name": queue_name,
-                    "retry_count": 0,
-                    "enqueued_at": time.time(),
-                }
-                qr.rpush(f"queue:{queue_name}", json.dumps(task_data))
-                enqueued += 1
+            if enqueued % 100 == 0:
+                logger.info(f"  ... {enqueued}")
 
-                if enqueued % 100 == 0:
-                    db.commit()
-                    logger.info(f"  ... {enqueued}")
-
-            except Exception as e:
-                logger.error(f"  Failed to enqueue {username}: {e}")
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-
-        db.commit()
         total += enqueued
         logger.info(f"[{plat}] enqueued {enqueued} new users to {queue_name} "
                      f"(maxpage={maxpage}, has_state={sum(results)}, in_queue={len(queue_existing)})")

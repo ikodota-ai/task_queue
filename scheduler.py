@@ -21,7 +21,6 @@ import logging
 import time
 import uuid
 
-import pymysql
 import redis
 
 from config import cfg
@@ -40,21 +39,6 @@ PLATFORM_CONFIG = {
         "func": "x_incremental_crawl",
     },
 }
-
-
-def _get_db():
-    return pymysql.connect(
-        host=cfg["mysql_host"],
-        port=cfg["mysql_port"],
-        user=cfg["mysql_user"],
-        password=cfg["mysql_password"],
-        database=cfg["mysql_db"],
-        charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=5,
-        read_timeout=10,
-        autocommit=False,
-    )
 
 
 def _get_state_redis():
@@ -112,8 +96,6 @@ def _crawling_users(sr, prefix):
 def run(platform: str, interval: int, dry_run: bool = False, limit: int = 0):
     sr = _get_state_redis()
     qr = _get_queue_redis()
-    db = _get_db()
-    cur = db.cursor()
     now = int(time.time())
 
     platforms = ["ig", "x"] if platform == "all" else [platform]
@@ -160,22 +142,18 @@ def run(platform: str, interval: int, dry_run: bool = False, limit: int = 0):
             if uid in crawling:
                 continue
 
-            # 取最近一次抓取时间
             last_ts = int(incr_last or last_scrape or 0)
             if last_ts == 0:
-                # 从未跑过增量 — 立即入队
                 candidates.append((uid, 0))
             elif now - last_ts >= interval:
                 candidates.append((uid, now - last_ts))
 
         logger.info(f"[{plat}] state_keys={len(state_keys)} filtered={len(candidates)} "
-                     f"(skipped: in_queue={len(existing_in_queue)} crawling={len(crawling)})")
+                     f"(in_queue={len(existing_in_queue)} crawling={len(crawling)})")
 
         if limit and total + len(candidates) > limit:
             candidates = candidates[:limit - total]
 
-        # 5. 入队
-        table = cfg["table_prefix"] + "crawl_tasks"
         enqueued = 0
         for uid, elapsed in candidates:
             if dry_run:
@@ -184,37 +162,21 @@ def run(platform: str, interval: int, dry_run: bool = False, limit: int = 0):
                 enqueued += 1
                 continue
 
-            try:
-                cur.execute(
-                    f"INSERT INTO {table} (platform, task_type, user_id, status) "
-                    "VALUES (%s, 'incr', %s, 'pending')",
-                    (plat, uid),
-                )
-                db_task_id = cur.lastrowid
+            task_data = {
+                "task_id": str(uuid.uuid4()),
+                "func_name": func_name,
+                "args": [uid, 0],          # db_task_id=0，不再写 MySQL
+                "kwargs": {},
+                "queue_name": queue_name,
+                "retry_count": 0,
+                "enqueued_at": time.time(),
+            }
+            qr.rpush(f"queue:{queue_name}", json.dumps(task_data))
+            enqueued += 1
 
-                task_data = {
-                    "task_id": str(uuid.uuid4()),
-                    "func_name": func_name,
-                    "args": [uid, db_task_id],
-                    "kwargs": {},
-                    "queue_name": queue_name,
-                    "retry_count": 0,
-                    "enqueued_at": time.time(),
-                }
-                qr.rpush(f"queue:{queue_name}", json.dumps(task_data))
-                enqueued += 1
-            except Exception as e:
-                logger.error(f"  Failed to enqueue {uid}: {e}")
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-
-        db.commit()
         total += enqueued
         logger.info(f"[{plat}] enqueued {enqueued} to {queue_name}")
 
-    db.close()
     qr.close()
     sr.close()
 

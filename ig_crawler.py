@@ -133,46 +133,8 @@ def _mark_full_done_db(user_id: str, maxpage: int, platform: str = "ig"):
         logger.error(f"Failed to update DB full_done for {user_id}: {e}")
 
 
-def _update_crawl_status(db_task_id: int, status: str, images_count: int = None):
-    db = _get_db()
-    try:
-        cur = db.cursor()
-        if images_count is not None:
-            cur.execute(
-                f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, images_count = %s, updated_at = NOW() WHERE id = %s",
-                (status, images_count, db_task_id),
-            )
-        else:
-            cur.execute(
-                f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, updated_at = NOW() WHERE id = %s",
-                (status, db_task_id),
-            )
-        db.commit()
-    finally:
-        pass  # 复用连接，不关闭
-
 def _is_full_crawl_done(user_id: str) -> bool:
-    # 先看 MySQL 是否有 done 记录
-    db = _get_db()
-    try:
-        cur = db.cursor()
-        cur.execute(
-            f"SELECT status FROM {cfg['table_prefix']}crawl_tasks "
-            "WHERE platform = 'ig' AND user_id = %s AND task_type = 'full' "
-            "ORDER BY id DESC LIMIT 1",
-            (user_id,),
-        )
-        row = cur.fetchone()
-        if row and row[0] == "done":
-            return True
-    finally:
-        pass  # 复用连接，不关闭
-
-    # 兜底：旧爬虫做完全量，processed 集合非空即视为已完成
-    if _state_redis().scard(_pkey(user_id)) > 0:
-        return True
-
-    return False
+    return _state_redis().hget(_skey(user_id), "full_done") == "1"
 
 def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str, post_ts: int = None) -> int:
     """插入 la_star_instagram，返回自增 ID。post_ts 为帖子实际时间戳，为空则用当前时间。"""
@@ -1063,45 +1025,25 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 def ig_full_crawl(user_id: str, db_task_id: int = None, maxpage: int = None) -> str:
     if maxpage is None:
         maxpage = int(os.getenv("MAX_PAGE", 500))
-    if db_task_id:
-        _update_crawl_status(db_task_id, "processing")
-    try:
-        count = _crawl_user(user_id, incremental=False, maxpage=maxpage)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "done", count)
-        result = f"full crawl: {count} images"
-        state = _state_redis().hgetall(_skey(user_id))
-        if state.get("full_done") == "1":
-            logger.info(f"Full crawl completed for {user_id} (ready for scheduler)")
-        else:
-            logger.info(f"Full crawl for {user_id} did not reach bottom, skipping incr")
-        return result
-    except Exception:
-        if db_task_id:
-            _update_crawl_status(db_task_id, "failed")
-        raise
+    count = _crawl_user(user_id, incremental=False, maxpage=maxpage)
+    result = f"full crawl: {count} images"
+    state = _state_redis().hgetall(_skey(user_id))
+    if state.get("full_done") == "1":
+        logger.info(f"Full crawl completed for {user_id} (ready for scheduler)")
+    else:
+        logger.info(f"Full crawl for {user_id} did not reach bottom, skipping incr")
+    return result
 
 @register_task("ig_incremental_crawl")
 def ig_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
     if not _is_full_crawl_done(user_id):
         msg = f"Skipping incremental for {user_id}: full crawl not done"
         logger.warning(msg)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "skipped")
         return msg
 
-    if db_task_id:
-        _update_crawl_status(db_task_id, "processing")
-    try:
-        count = _crawl_user(user_id, incremental=True)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "done", count)
-        result = f"incremental crawl: {count} images"
-        return result
-    except Exception:
-        if db_task_id:
-            _update_crawl_status(db_task_id, "failed")
-        raise
+    count = _crawl_user(user_id, incremental=True)
+    result = f"incremental crawl: {count} images"
+    return result
 
 
 # -----------------------------------------------------------

@@ -147,50 +147,8 @@ def _insert_star_instagram(star_id: int, image: str, batch: str, check_code: str
         pass  # 复用连接
 
 
-# -----------------------------------------------------------
-# 抓取任务状态跟踪
-# -----------------------------------------------------------
-
-def _update_crawl_status(db_task_id: int, status: str, images_count: int = None):
-    """更新 la_crawl_tasks 状态"""
-    db = _get_db()
-    try:
-        cur = db.cursor()
-        if images_count is not None:
-            cur.execute(
-                f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, images_count = %s, updated_at = NOW() WHERE id = %s",
-                (status, images_count, db_task_id),
-            )
-        else:
-            cur.execute(
-                f"UPDATE {cfg['table_prefix']}crawl_tasks SET status = %s, updated_at = NOW() WHERE id = %s",
-                (status, db_task_id),
-            )
-        db.commit()
-    finally:
-        pass  # 复用连接
-
 def _is_full_crawl_done(user_id: str) -> bool:
-    """检查用户全量抓取是否已完成"""
-    db = _get_db()
-    try:
-        cur = db.cursor()
-        cur.execute(
-            f"SELECT status FROM {cfg['table_prefix']}crawl_tasks "
-            "WHERE platform = 'x' AND user_id = %s AND task_type = 'full' "
-            "ORDER BY id DESC LIMIT 1",
-            (user_id,),
-        )
-        row = cur.fetchone()
-        if row and row[0] == "done":
-            return True
-    finally:
-        pass  # 复用连接
-
-    if _state_redis().scard(_pkey(user_id)) > 0:
-        return True
-
-    return False
+    return _state_redis().hget(_skey(user_id), "full_done") == "1"
 
 
 # -----------------------------------------------------------
@@ -918,42 +876,21 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 def x_full_crawl(user_id: str, db_task_id: int = None, maxpage: int = None) -> str:
     if maxpage is None:
         maxpage = int(os.getenv("MAX_PAGE", 500))
-    if db_task_id:
-        _update_crawl_status(db_task_id, "processing")
-    try:
-        count = _crawl_user(user_id, incremental=False, maxpage=maxpage)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "done", count)
-        result = f"full crawl: {count} images"
-        logger.info(f"Full crawl completed for {user_id} (ready for scheduler)")
-        return result
-    except Exception:
-        if db_task_id:
-            _update_crawl_status(db_task_id, "failed")
-        raise
+    count = _crawl_user(user_id, incremental=False, maxpage=maxpage)
+    result = f"full crawl: {count} images"
+    logger.info(f"Full crawl completed for {user_id} (ready for scheduler)")
+    return result
 
 @register_task("x_incremental_crawl")
 def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
-    # 检查全量是否完成
     if not _is_full_crawl_done(user_id):
         msg = f"Skipping incremental for {user_id}: full crawl not done"
         logger.warning(msg)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "skipped")
         return msg
 
-    if db_task_id:
-        _update_crawl_status(db_task_id, "processing")
-    try:
-        count = _crawl_user(user_id, incremental=True)
-        if db_task_id:
-            _update_crawl_status(db_task_id, "done", count)
-        result = f"incremental crawl: {count} images"
-        return result
-    except Exception:
-        if db_task_id:
-            _update_crawl_status(db_task_id, "failed")
-        raise
+    count = _crawl_user(user_id, incremental=True)
+    result = f"incremental crawl: {count} images"
+    return result
 
 
 # -----------------------------------------------------------

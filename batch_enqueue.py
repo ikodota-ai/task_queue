@@ -179,7 +179,6 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False, pri
         return
 
     qr = _get_queue_redis()
-    table = cfg["table_prefix"] + "crawl_tasks"
 
     # 一次性加载队列中已有的 user_id，避免每次 lrange O(n^2)
     existing = set()
@@ -193,50 +192,30 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False, pri
     if existing:
         print(f"  Queue has {len(existing)} unique users, skipping duplicates")
 
-    db = _get_db()
-    cur = db.cursor()
-
     enqueued = 0
     for uid, _ in users:
         if uid in existing:
             continue
-        try:
-            cur.execute(
-                f"INSERT INTO {table} (platform, task_type, user_id, status) "
-                "VALUES (%s, 'full', %s, 'pending')",
-                (platform, uid),
-            )
-            db_task_id = cur.lastrowid
 
-            tid = str(uuid.uuid4())
-            task_data = {
-                "task_id": tid,
-                "func_name": func_name,
-                "args": [uid, db_task_id, maxpage],
-                "kwargs": {},
-                "queue_name": queue_name,
-                "retry_count": 0,
-                "enqueued_at": time.time(),
-            }
-            if priority:
-                qr.lpush(queue_key, json.dumps(task_data))
-            else:
-                qr.rpush(queue_key, json.dumps(task_data))
-            enqueued += 1
+        tid = str(uuid.uuid4())
+        task_data = {
+            "task_id": tid,
+            "func_name": func_name,
+            "args": [uid, 0, maxpage],      # db_task_id=0
+            "kwargs": {},
+            "queue_name": queue_name,
+            "retry_count": 0,
+            "enqueued_at": time.time(),
+        }
+        if priority:
+            qr.lpush(queue_key, json.dumps(task_data))
+        else:
+            qr.rpush(queue_key, json.dumps(task_data))
+        enqueued += 1
 
-            if enqueued % 100 == 0:
-                db.commit()
-                print(f"  ... {enqueued}/{len(users)}")
+        if enqueued % 100 == 0:
+            print(f"  ... {enqueued}/{len(users)}")
 
-        except Exception as e:
-            print(f"  [ERROR] {uid}: {e}")
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            continue
-
-    db.commit()
     db.close()
     print(f"\nDone. {enqueued} users enqueued to {queue_name}")
     print(f"Queue length: {qr.llen(queue_key)} (after)")
