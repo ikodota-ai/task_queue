@@ -142,7 +142,7 @@ def run(platform: str, interval: int, dry_run: bool = False, limit: int = 0):
             if uid in crawling:
                 continue
 
-            last_ts = int(incr_last or last_scrape or 0)
+            last_ts = int(float(incr_last or last_scrape or 0))
             if last_ts == 0:
                 candidates.append((uid, 0))
             elif now - last_ts >= interval:
