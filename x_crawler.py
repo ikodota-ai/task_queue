@@ -854,11 +854,14 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             _mark_full_done_db(user_id, maxpage, "x")
 
     if processed:
-        _update_state(user_id, last_scrape_time=time.time())
+        _update_state(user_id, last_scrape_time=time.time(), last_images=str(processed))
     if incremental and processed >= 0:
         r = _state_redis()
         cnt = r.hincrby(_skey(user_id), "incr_count", 1)
-        r.hset(_skey(user_id), "incr_last_time", str(int(time.time())))
+        r.hset(_skey(user_id), mapping={
+            "incr_last_time": str(int(time.time())),
+            "incr_last_images": str(processed),
+        })
         logger.info(f"Incremental #{cnt} done for {user_id}")
     elif cursor_url and not incremental:
         _state_redis().hdel(_skey(user_id), "cursor_url")

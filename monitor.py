@@ -12,7 +12,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 
-import pymysql
 import redis
 
 from config import cfg
@@ -20,8 +19,6 @@ from config import cfg
 from task_queue_robust import TaskQueue
 
 app = Flask(__name__)
-
-_TABLE = cfg["table_prefix"] + "crawl_tasks"
 
 
 def _get_tq():
@@ -48,30 +45,17 @@ def api_enqueue():
     if platform not in ("ig", "x") or task_type not in ("full", "incr") or not user_id:
         return jsonify({"error": "invalid params"}), 400
 
-    # 写入 MySQL
-    db = _get_db()
-    cur = db.cursor()
-    cur.execute(
-        f"INSERT INTO {_TABLE} (platform, task_type, user_id, status) VALUES (%s, %s, %s, 'pending')",
-        (platform, task_type, user_id),
-    )
-    task_id = cur.lastrowid
-    db.commit()
-    db.close()
-
     # 入队 Redis
     tq = _get_tq()
     queue_name = f"crawl:{platform}:{task_type}"
     func_name = f"{platform}_full_crawl" if task_type == "full" else f"{platform}_incremental_crawl"
-    # maxpage 传给任务，防重
     if maxpage and maxpage.isdigit() and task_type == "full":
-        tid = tq.enqueue_unique(queue_name, func_name, user_id, task_id, int(maxpage))
+        tid = tq.enqueue_unique(queue_name, func_name, user_id, 0, int(maxpage))
     else:
-        tid = tq.enqueue_unique(queue_name, func_name, user_id, task_id)
+        tid = tq.enqueue_unique(queue_name, func_name, user_id, 0)
 
     return jsonify({
         "ok": True,
-        "db_task_id": task_id,
         "queue_name": queue_name,
         "redis_task_id": tid,
     })
@@ -217,16 +201,6 @@ def api_schedule_run_now(sid):
     return jsonify({"ok": True})
 
 
-def _get_db():
-    return pymysql.connect(
-        host=cfg["mysql_host"], port=cfg["mysql_port"],
-        user=cfg["mysql_user"], password=cfg["mysql_password"],
-        database=cfg["mysql_db"], charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=5, read_timeout=10,
-    )
-
-
 def _get_queue_redis():
     return redis.Redis(
         host=cfg["queue_redis_host"], port=cfg["queue_redis_port"],
@@ -245,74 +219,47 @@ def _get_state_redis():
 
 @app.route("/api/status")
 def api_status():
-    db = qr = sr = None
+    qr = sr = None
     try:
-        db = _get_db()
         qr = _get_queue_redis()
-
-        # ===== MySQL 任务概览 (单次查询) =====
-        cur = db.cursor()
-        cur.execute(f"""
-            SELECT platform, task_type, status, COUNT(*) as cnt
-            FROM {_TABLE} GROUP BY platform, task_type, status
-        """)
-        task_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        for row in cur.fetchall():
-            task_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
-
-        cur.execute(f"""
-            SELECT id, platform, task_type, user_id, status,
-                   DATE_FORMAT(updated_at, '%m-%d %H:%i') as upd
-            FROM {_TABLE} ORDER BY id DESC LIMIT 10
-        """)
-        recent_tasks = list(cur.fetchall())
-
-        # 今日进度
-        cur.execute(f"""
-            SELECT platform, task_type, status, COUNT(*) as cnt
-            FROM {_TABLE}
-            WHERE DATE(updated_at) = CURDATE()
-            GROUP BY platform, task_type, status
-        """)
-        today_stats = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
-        for row in cur.fetchall():
-            today_stats[row["platform"]][row["task_type"]][row["status"]] = row["cnt"]
-
-        # 工作量汇总：今日/昨日/本周/本月
-        work_periods = {}
-        periods = {
-            "today":    "DATE(updated_at) = CURDATE()",
-            "yesterday":"DATE(updated_at) = CURDATE() - INTERVAL 1 DAY",
-            "week":     "YEARWEEK(updated_at) = YEARWEEK(CURDATE())",
-            "month":    "DATE_FORMAT(updated_at, '%Y%m') = DATE_FORMAT(CURDATE(), '%Y%m')",
-        }
-        for key, cond in periods.items():
-            cur.execute(f"""
-                SELECT platform,
-                       COUNT(DISTINCT user_id) as users,
-                       SUM(images_count) as images
-                FROM {_TABLE}
-                WHERE {cond} AND status = 'done'
-                GROUP BY platform
-            """)
-            work_periods[key] = {}
-            for row in cur.fetchall():
-                work_periods[key][row["platform"]] = {"users": row["users"] or 0, "images": row["images"] or 0}
-
-        # ===== 全量/增量覆盖统计 =====
         sr = _get_state_redis()
+        now_ts = int(time.time())
+        today_start = now_ts - now_ts % 86400  # 今天 0 点
+
+        # ===== 全量/增量/今日覆盖统计（一次扫描 state keys）=====
         full_done_cnt = {"ig": 0, "x": 0}
         incr_24h = {"ig": 0, "x": 0}
-        now_ts = int(time.time())
+        work = {"ig": {"today_users": 0, "today_images": 0, "today_incr": 0},
+                "x":  {"today_users": 0, "today_images": 0, "today_incr": 0}}
         for plat, prefix in [("ig", "instagram:"), ("x", "twitter:")]:
             for k in sr.keys(f"{prefix}*:state"):
                 data = sr.hgetall(k)
                 if data.get("full_done") == "1":
                     full_done_cnt[plat] += 1
-                last = int(data.get("incr_last_time", 0))
-                if last > now_ts - 86400:
+                incr_last = int(data.get("incr_last_time", 0))
+                if incr_last > now_ts - 86400:
                     incr_24h[plat] += 1
+                if incr_last >= today_start:
+                    work[plat]["today_incr"] += 1
+                    work[plat]["today_images"] += int(data.get("incr_last_images", 0))
+                scrape_ts = int(data.get("last_scrape_time", 0))
+                if scrape_ts >= today_start:
+                    work[plat]["today_users"] += 1
+                    work[plat]["today_images"] += int(data.get("last_images", 0))
+
         coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
+
+        # ===== 工作量（简化：仅今日）=====
+        work_periods = {
+            "today": {
+                "ig": {"users": work["ig"]["today_users"], "images": work["ig"]["today_images"]},
+                "x":  {"users": work["x"]["today_users"],  "images": work["x"]["today_images"]},
+            }
+        }
+        # 兼容前端格式
+        task_stats = {}
+        today_stats = {}
+        recent_tasks = []
         # ===== task_meta 概况 (一次 keys 分类) =====
         tm_total = 0
         tm_by_q = {"dl:ig": 0, "dl:x": 0, "crawl": 0}
@@ -450,11 +397,6 @@ def api_status():
         completed_crawls = completed_crawls[-6:][::-1]
 
     finally:
-        if db:
-            try:
-                db.close()
-            except Exception:
-                pass
         if qr:
             try:
                 qr.close()
