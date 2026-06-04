@@ -223,63 +223,67 @@ def _get_state_redis():
     )
 
 
+# state 扫描缓存（慢，30s 刷新一次）
+_state_cache = {"ts": 0, "data": None}
+
+def _refresh_state_cache():
+    now_ts = int(time.time())
+    if _state_cache["data"] and now_ts - _state_cache["ts"] < 30:
+        return _state_cache["data"]
+
+    sr = _get_state_redis()
+    today_start = now_ts - now_ts % 86400
+
+    def _parse_ts(v):
+        if not v: return 0
+        try: return int(float(v))
+        except: pass
+        try:
+            from datetime import datetime
+            return int(datetime.fromisoformat(str(v).replace("Z","+00:00")).timestamp())
+        except: return 0
+
+    full_done_cnt = {"ig":0,"x":0}
+    incr_24h = {"ig":0,"x":0}
+    work = {"ig":{"today_users":0,"today_images":0},"x":{"today_users":0,"today_images":0}}
+    for plat, prefix in [("ig","instagram:"),("x","twitter:")]:
+        for k in sr.keys(f"{prefix}*:state"):
+            data = sr.hgetall(k)
+            if data.get("full_done")=="1":
+                full_done_cnt[plat] += 1
+            il = _parse_ts(data.get("incr_last_time"))
+            if il > now_ts-86400: incr_24h[plat] += 1
+            if il >= today_start:
+                work[plat]["today_images"] += int(float(data.get("incr_last_images",0) or 0))
+            st = _parse_ts(data.get("last_scrape_time"))
+            if st >= today_start:
+                work[plat]["today_users"] += 1
+                work[plat]["today_images"] += int(float(data.get("last_images",0) or 0))
+
+    data = {
+        "coverage": {"full_done": full_done_cnt, "incr_24h": incr_24h},
+        "work": {"today":{"ig":{"users":work["ig"]["today_users"],"images":work["ig"]["today_images"]},
+                          "x":{"users":work["x"]["today_users"],"images":work["x"]["today_images"]}}},
+    }
+    _state_cache = {"ts": now_ts, "data": data}
+    sr.close()
+    return data
+
+
 @app.route("/api/status")
 def api_status():
-    qr = sr = None
+    qr = None
     try:
         qr = _get_queue_redis()
-        sr = _get_state_redis()
         now_ts = int(time.time())
-        today_start = now_ts - now_ts % 86400  # 今天 0 点
 
-        def _parse_ts(v):
-            """state 中时间值可能是 Unix 时间戳(浮点/整数字符串)或 ISO 格式，统一转为 int"""
-            if not v:
-                return 0
-            try:
-                return int(float(v))
-            except (ValueError, TypeError):
-                pass
-            try:
-                from datetime import datetime
-                return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp())
-            except Exception:
-                return 0
-
-        # ===== 全量/增量/今日覆盖统计（一次扫描 state keys）=====
-        full_done_cnt = {"ig": 0, "x": 0}
-        incr_24h = {"ig": 0, "x": 0}
-        work = {"ig": {"today_users": 0, "today_images": 0, "today_incr": 0},
-                "x":  {"today_users": 0, "today_images": 0, "today_incr": 0}}
-        for plat, prefix in [("ig", "instagram:"), ("x", "twitter:")]:
-            for k in sr.keys(f"{prefix}*:state"):
-                data = sr.hgetall(k)
-                if data.get("full_done") == "1":
-                    full_done_cnt[plat] += 1
-                incr_last = _parse_ts(data.get("incr_last_time"))
-                if incr_last > now_ts - 86400:
-                    incr_24h[plat] += 1
-                if incr_last >= today_start:
-                    work[plat]["today_incr"] += 1
-                    work[plat]["today_images"] += int(float(data.get("incr_last_images", 0) or 0))
-                scrape_ts = _parse_ts(data.get("last_scrape_time"))
-                if scrape_ts >= today_start:
-                    work[plat]["today_users"] += 1
-                    work[plat]["today_images"] += int(float(data.get("last_images", 0) or 0))
-
-        coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
-
-        # ===== 工作量（简化：仅今日）=====
-        work_periods = {
-            "today": {
-                "ig": {"users": work["ig"]["today_users"], "images": work["ig"]["today_images"]},
-                "x":  {"users": work["x"]["today_users"],  "images": work["x"]["today_images"]},
-            }
-        }
-        # 兼容前端格式
+        cached = _refresh_state_cache()
+        coverage = cached["coverage"]
+        work_periods = cached["work"]
         task_stats = {}
         today_stats = {}
         recent_tasks = []
+
         # ===== task_meta 概况 (一次 keys 分类) =====
         tm_total = 0
         tm_by_q = {"dl:ig": 0, "dl:x": 0, "crawl": 0}
@@ -420,11 +424,6 @@ def api_status():
         if qr:
             try:
                 qr.close()
-            except Exception:
-                pass
-        if sr:
-            try:
-                sr.close()
             except Exception:
                 pass
 
