@@ -210,11 +210,20 @@ def run():
 
         logger.info(f"[{s.get('name')}] → {full_cmd}")
         try:
-            # 用 subprocess.Popen 异步启动，不阻塞等待
-            subprocess.Popen(full_cmd, shell=True, cwd=basedir)
+            result = subprocess.run(full_cmd, shell=True, cwd=basedir,
+                                    capture_output=True, text=True, timeout=300)
+            last_line = result.stdout.strip().split("\n")[-1] if result.stdout.strip() else ""
+            r.hset(f"schedule:{sid}", mapping={
+                "last_status": "ok" if result.returncode == 0 else "fail",
+                "last_result": last_line[:200],
+            })
             executed += 1
+        except subprocess.TimeoutExpired:
+            logger.error(f"[{s.get('name')}] Timeout")
+            r.hset(f"schedule:{sid}", mapping={"last_status": "timeout", "last_result": "timeout"})
         except Exception as e:
             logger.error(f"[{s.get('name')}] Failed: {e}")
+            r.hset(f"schedule:{sid}", mapping={"last_status": "fail", "last_result": str(e)[:200]})
 
         # --- 执行后更新状态 ---
         r.hset(f"schedule:{sid}", "last_run", str(now))
