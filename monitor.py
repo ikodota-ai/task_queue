@@ -227,6 +227,7 @@ def _get_state_redis():
 _state_cache = {"ts": 0, "data": None}
 
 def _refresh_state_cache():
+    global _state_cache
     now_ts = int(time.time())
     if _state_cache["data"] and now_ts - _state_cache["ts"] < 30:
         return _state_cache["data"]
