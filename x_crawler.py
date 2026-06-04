@@ -546,20 +546,11 @@ def _is_valid_image(url: str) -> bool:
 
 def _extract_carousel_images(driver, link) -> tuple:
     """点击推文 → 弹窗打开 → 翻页取图 → 关闭弹窗。返回 (images, post_ts)。"""
-    grid_url = driver.current_url
     try:
         link.click()
     except Exception:
         return [], None
     time.sleep(2)
-
-    # 如果 URL 变了且不含 'photo'，说明点进了推文详情页而不是弹窗 → 后退
-    if driver.current_url != grid_url and "photo" not in driver.current_url:
-        logger.warning(f"Navigated to tweet page instead of modal, going back")
-        driver.back()
-        time.sleep(2)
-        return [], None
-
     images, post_ts = _extract_images_from_tweet(driver)
     if not images:
         _close_modal(driver)
@@ -803,6 +794,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             # 跳过已处理
             if cursor_url is None and _is_processed(user_id, tweet_id):
                 logger.debug(f"  Skip already processed: {tweet_id}")
+                continue
+
+            # 不含 photo 的 link 不是图片推文（可能是纯文字/转推），直接跳过
+            if "photo" not in clean:
                 continue
 
             # ---- 提取图片：在页面上找到对应 link 元素点击 ----
