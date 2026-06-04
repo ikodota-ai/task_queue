@@ -585,15 +585,12 @@ def _extract_images_from_tweet(driver) -> tuple:
     post_ts = _extract_post_timestamp(driver)
 
     def _grab():
-        for xp in (
-            "//div[@aria-roledescription='carousel']//img",
-            "//article//img[contains(@src, 'pbs.twimg.com')]",
-        ):
-            for img in driver.find_elements(By.XPATH, xp):
-                src = img.get_attribute("src")
-                if _is_valid_image(src) and src not in seen:
-                    seen.add(src)
-                    images.append(src)
+        for img in driver.find_elements(By.XPATH,
+                "//div[@role='dialog']//div[@aria-label='Image']//img"):
+            src = img.get_attribute("src")
+            if _is_valid_image(src) and src not in seen:
+                seen.add(src)
+                images.append(src)
 
     
     _grab()
