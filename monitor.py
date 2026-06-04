@@ -242,16 +242,16 @@ def api_status():
                 data = sr.hgetall(k)
                 if data.get("full_done") == "1":
                     full_done_cnt[plat] += 1
-                incr_last = int(data.get("incr_last_time", 0))
+                incr_last = int(float(data.get("incr_last_time", 0)))
                 if incr_last > now_ts - 86400:
                     incr_24h[plat] += 1
                 if incr_last >= today_start:
                     work[plat]["today_incr"] += 1
-                    work[plat]["today_images"] += int(data.get("incr_last_images", 0))
-                scrape_ts = int(data.get("last_scrape_time", 0))
+                    work[plat]["today_images"] += int(float(data.get("incr_last_images", 0)))
+                scrape_ts = int(float(data.get("last_scrape_time", 0)))
                 if scrape_ts >= today_start:
                     work[plat]["today_users"] += 1
-                    work[plat]["today_images"] += int(data.get("last_images", 0))
+                    work[plat]["today_images"] += int(float(data.get("last_images", 0)))
 
         coverage = {"full_done": full_done_cnt, "incr_24h": incr_24h}
 
