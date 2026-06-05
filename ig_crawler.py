@@ -990,8 +990,15 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     # 已完成，清除进度
     _state_redis().hdel(_skey(user_id), "posts_done")
 
+    # processed==0 且到底 → 可能限流，抛异常进 retry 指数退避等待
+    if processed == 0 and same_height >= 10:
+        raise RuntimeError(
+            f"IG crawl for {user_id}: 0 posts found, likely rate-limited. "
+            "Task will retry with exponential backoff.")
+    if processed == 0:
+        logger.warning(f"IG crawl for {user_id}: 0 posts found (possibly rate-limited)")
+
     # 全量完成时写入状态（增量不写这些字段）
-    # processed==0 说明没抓到新帖，不设 full_done（可能是 cookie 失效或页面未加载）
     actual_pages = scroll_idx + 1
     if same_height >= 10:
         logger.info(f"Reached bottom at page {actual_pages}")
