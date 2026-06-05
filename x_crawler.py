@@ -545,7 +545,10 @@ def _extract_images_from_tweet(driver) -> tuple:
     def _grab():
         for img in driver.find_elements(By.XPATH,
                 "//div[@role='dialog']//div[@aria-label='Image']//img"):
-            src = img.get_attribute("src")
+            try:
+                src = img.get_attribute("src")
+            except Exception:
+                continue  # stale element after carousel page switch
             if _is_valid_image(src) and src not in seen:
                 seen.add(src)
                 images.append(src)
