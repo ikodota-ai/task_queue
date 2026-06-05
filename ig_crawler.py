@@ -991,10 +991,11 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     _state_redis().hdel(_skey(user_id), "posts_done")
 
     # 全量完成时写入状态（增量不写这些字段）
+    # processed==0 说明没抓到新帖，不设 full_done（可能是 cookie 失效或页面未加载）
     actual_pages = scroll_idx + 1
     if same_height >= 10:
         logger.info(f"Reached bottom at page {actual_pages}")
-        if not incremental:
+        if not incremental and processed > 0:
             _state_redis().hset(_skey(user_id), mapping={
                 "last_maxpage": str(maxpage),
                 "full_done": "1",
@@ -1003,7 +1004,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             _mark_full_done_db(user_id, maxpage, "ig")
     else:
         logger.info(f"Reached maxpage limit ({maxpage} pages)")
-        if not incremental:
+        if not incremental and processed > 0:
             _state_redis().hset(_skey(user_id), mapping={
                 "last_maxpage": str(maxpage),
                 "full_done": "1",
