@@ -744,6 +744,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             if clean in seen_urls:
                 continue
             seen_urls.add(clean)
+            posts_done += 1
 
             tweet_id = _extract_tweet_id(clean)
             if not tweet_id:
@@ -801,7 +802,6 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             _mark_processed(user_id, tweet_id)
             processed += len(image_urls)
             new_found += 1
-            posts_done += 1
 
             if not incremental:
                 since_cursor_save += 1
