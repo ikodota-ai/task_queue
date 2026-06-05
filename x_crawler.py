@@ -700,10 +700,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     seen_urls = set()
     no_new = 0
     same_height = 0
-    prev_height = 0
+    prev_height = driver.execute_script("return document.documentElement.scrollHeight")
     since_cursor_save = 0
 
-    target_posts = maxpage * 12
+    target_posts = maxpage * 30
     posts_done = int(_state_redis().hget(_skey(user_id), "posts_done") or 0) if not incremental else 0
     scroll_idx = 0
     while scroll_idx < maxpage:
@@ -825,10 +825,10 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             same_height = 10
             break
 
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
         time.sleep(3)
 
-        new_h = driver.execute_script("return document.body.scrollHeight")
+        new_h = driver.execute_script("return document.documentElement.scrollHeight")
         if new_h == prev_height:
             same_height += 1
             if same_height >= 10:
