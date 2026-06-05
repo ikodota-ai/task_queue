@@ -930,7 +930,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                     save_path = f"ig/{user_id}/{filename}"
                 # db_id=0 表示 check_code 已存在，跳过下载
                 if db_id == 0:
-                    continue
+                    db_id = None
                 tq.enqueue(
                     f"dl:{'ig'}", "sub_download_image",
                     img_url, save_path, db_id, "ig", user_id,

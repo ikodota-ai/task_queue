@@ -793,7 +793,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
                     db_id = None
                     save_path = f"x/{user_id}/{filename}"
                 if db_id == 0:
-                    continue
+                    db_id = None
                 tq.enqueue(
                     f"dl:x", "sub_download_image",
                     img_url, save_path, db_id, "x", user_id,
