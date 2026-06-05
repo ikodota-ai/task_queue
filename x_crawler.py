@@ -818,11 +818,11 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         else:
             no_new += 1
             if incremental and no_new >= 2:
-                logger.info("No new tweets for 5 scrolls, boundary reached")
+                logger.info("No new tweets for 2 scrolls, boundary reached")
                 break
 
         if not incremental and posts_done >= target_posts:
-            same_height = 10
+            logger.info(f"Reached target_posts limit ({target_posts} posts)")
             break
 
         driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
