@@ -77,8 +77,9 @@ def _get_queue_redis():
 
 
 def _existing_queue_users(qr, queue_name):
-    """返回已在 full 队列(pending)中的 user_id 集合。"""
+    """返回已在 full 队列(pending+retry+processing)中的 user_id 集合。"""
     existing = set()
+    # 主队列
     for raw in qr.lrange(f"queue:{queue_name}", 0, -1):
         try:
             d = json.loads(raw)
@@ -86,6 +87,24 @@ def _existing_queue_users(qr, queue_name):
                 existing.add(str(d["args"][0]))
         except Exception:
             pass
+    # retry 队列
+    for raw in qr.zrange(f"retry:{queue_name}", 0, -1):
+        try:
+            d = json.loads(raw)
+            if d.get("args"):
+                existing.add(str(d["args"][0]))
+        except Exception:
+            pass
+    # processing 集合
+    for tid in qr.hkeys(f"processing:{queue_name}"):
+        data = qr.get(f"processing_data:{tid}")
+        if data:
+            try:
+                d = json.loads(data)
+                if d.get("args"):
+                    existing.add(str(d["args"][0]))
+            except Exception:
+                pass
     return existing
 
 

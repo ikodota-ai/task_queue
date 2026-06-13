@@ -112,7 +112,7 @@ class Producer:
             }.get(key, "unknown_task")
 
             try:
-                self._tq.enqueue(queue_name, function_name, row["user_id"], row["id"])
+                self._tq.enqueue_unique(queue_name, function_name, row["user_id"], row["id"])
                 self._mark_queued(row["id"])
                 count += 1
                 logger.info(f"Enqueued {queue_name} user_id={row['user_id']} (task_id={row['id']})")

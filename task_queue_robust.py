@@ -125,7 +125,7 @@ class TaskQueue:
         return self.enqueue_batch(queue_name, [(func, args, kwargs)])[0]
 
     def enqueue_unique(self, queue_name: str, func: Union[str, Callable], *args, **kwargs) -> str:
-        """入队前检查同队列是否已存在相同第一参数（user_id）的任务，存在则跳过"""
+        """入队前检查同队列（主+retry+processing）是否已存在相同第一参数（user_id）的任务，存在则跳过"""
         import json as _json
         first_arg = str(args[0]) if args else ""
         # 检查主队列
@@ -133,7 +133,7 @@ class TaskQueue:
             try:
                 d = _json.loads(task_json)
                 if d.get("args") and str(d["args"][0]) == first_arg:
-                    return d["task_id"]  # 已存在
+                    return d["task_id"]
             except Exception:
                 pass
         # 检查 retry 队列
@@ -144,6 +144,16 @@ class TaskQueue:
                     return d["task_id"]
             except Exception:
                 pass
+        # 检查 processing 集合
+        for tid in self.redis.hkeys(self.processing_key(queue_name)):
+            data = self.redis.get(f"processing_data:{tid}")
+            if data:
+                try:
+                    d = _json.loads(data)
+                    if d.get("args") and str(d["args"][0]) == first_arg:
+                        return d["task_id"]
+                except Exception:
+                    pass
         return self.enqueue(queue_name, func, *args, **kwargs)
 
     def enqueue_batch(self, queue_name: str, tasks: List[tuple]) -> List[str]:
@@ -201,17 +211,80 @@ class TaskQueue:
         self.redis.hset(self.task_meta_key(task.queue_name, task.task_id), "status", "processing")
         return task
 
+    def _get_existing_users(self, queue_name: str) -> set:
+        """返回主队列 + retry + processing 中所有用户 id（去重用）"""
+        existing_users = set()
+        # 主队列
+        for raw in self.redis.lrange(self.queue_key(queue_name), 0, -1):
+            try:
+                d = json.loads(raw)
+                if d.get("args"):
+                    existing_users.add(str(d["args"][0]))
+            except Exception:
+                pass
+        # retry 队列
+        for raw in self.redis.zrange(self.retry_key(queue_name), 0, -1):
+            try:
+                d = json.loads(raw)
+                if d.get("args"):
+                    existing_users.add(str(d["args"][0]))
+            except Exception:
+                pass
+        # processing 集合
+        for tid in self.redis.hkeys(self.processing_key(queue_name)):
+            data = self.redis.get(f"processing_data:{tid}")
+            if data:
+                try:
+                    d = json.loads(data)
+                    if d.get("args"):
+                        existing_users.add(str(d["args"][0]))
+                except Exception:
+                    pass
+        return existing_users
+
     def _requeue_due_retry(self, queue_name: str):
-        """将延迟重试队列中到期的任务移回主队列"""
+        """将延迟重试队列中到期的任务移回主队列（主队列+processing 已有同用户则丢弃）"""
         now = time.time()
-        # 从 Sorted Set 中取出 score <= now 的所有任务
         tasks = self.redis.zrangebyscore(self.retry_key(queue_name), 0, now)
         if tasks:
+            # 合并收集主队列 + processing 中已有的用户
+            existing_users = set()
+            for raw in self.redis.lrange(self.queue_key(queue_name), 0, -1):
+                try:
+                    d = json.loads(raw)
+                    if d.get("args"):
+                        existing_users.add(str(d["args"][0]))
+                except Exception:
+                    pass
+            for tid in self.redis.hkeys(self.processing_key(queue_name)):
+                data = self.redis.get(f"processing_data:{tid}")
+                if data:
+                    try:
+                        d = json.loads(data)
+                        if d.get("args"):
+                            existing_users.add(str(d["args"][0]))
+                    except Exception:
+                        pass
+
             pipeline = self.redis.pipeline()
+            skipped = 0
             for task_json in tasks:
+                # 检查该用户是否已在主队列或处理中（合并判定）
+                try:
+                    d = json.loads(task_json)
+                    uid = str(d.get("args", [None])[0]) if d.get("args") else None
+                except Exception:
+                    uid = None
+                if uid and uid in existing_users:
+                    # 已有同用户的新任务在处理或排队，丢弃旧 retry 任务
+                    pipeline.zrem(self.retry_key(queue_name), task_json)
+                    skipped += 1
+                    continue
                 pipeline.rpush(self.queue_key(queue_name), task_json)
                 pipeline.zrem(self.retry_key(queue_name), task_json)
             pipeline.execute()
+            if skipped:
+                logger.info(f"Skipped {skipped} retry tasks (user already in main queue or processing)")
 
     def _recover_timeout_tasks(self, queue_name: str):
         """恢复超时的 processing 任务（Worker崩溃）"""

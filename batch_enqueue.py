@@ -180,7 +180,7 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False, pri
 
     qr = _get_queue_redis()
 
-    # 一次性加载队列中已有的 user_id，避免每次 lrange O(n^2)
+    # 一次性加载主队列 + retry + processing 中已有的 user_id
     existing = set()
     for item in qr.lrange(queue_key, 0, -1):
         try:
@@ -189,8 +189,28 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False, pri
                 existing.add(str(d["args"][0]))
         except Exception:
             pass
+    # 也检查 retry 队列
+    retry_key = f"retry:{queue_name}"
+    for item in qr.zrange(retry_key, 0, -1):
+        try:
+            d = json.loads(item)
+            if d.get("args"):
+                existing.add(str(d["args"][0]))
+        except Exception:
+            pass
+    # 也检查 processing 集合
+    proc_key = f"processing:{queue_name}"
+    for tid in qr.hkeys(proc_key):
+        data = qr.get(f"processing_data:{tid}")
+        if data:
+            try:
+                d = json.loads(data)
+                if d.get("args"):
+                    existing.add(str(d["args"][0]))
+            except Exception:
+                pass
     if existing:
-        print(f"  Queue has {len(existing)} unique users, skipping duplicates")
+        print(f"  Queue+retry+processing has {len(existing)} unique users, skipping duplicates")
 
     enqueued = 0
     for uid, _ in users:

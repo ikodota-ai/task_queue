@@ -64,7 +64,7 @@ def _get_queue_redis():
 
 
 def _incr_queue_users(qr, queue_name):
-    """返回已在 incr 队列(pending+retry)中的 user_id 集合，用于去重。"""
+    """返回已在 incr 队列(pending+retry+processing)中的 user_id 集合，用于去重。"""
     existing = set()
     for raw in qr.lrange(f"queue:{queue_name}", 0, -1):
         try:
@@ -80,6 +80,16 @@ def _incr_queue_users(qr, queue_name):
                 existing.add(str(d["args"][0]))
         except Exception:
             pass
+    # processing 集合
+    for tid in qr.hkeys(f"processing:{queue_name}"):
+        data = qr.get(f"processing_data:{tid}")
+        if data:
+            try:
+                d = json.loads(data)
+                if d.get("args"):
+                    existing.add(str(d["args"][0]))
+            except Exception:
+                pass
     return existing
 
 
