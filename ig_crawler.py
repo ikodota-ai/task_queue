@@ -1119,7 +1119,7 @@ def main():
         dead = tq.dead_count(q)
         if dead:
             logger.info(f"Requeuing {dead} dead tasks from '{q}'")
-            tq.retry_dead(q)
+            tq.retry_dead(q, state_redis=_state_redis())
 
     def shutdown(sig, frame):
         global _stop_requested

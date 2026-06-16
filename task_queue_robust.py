@@ -378,24 +378,54 @@ class TaskQueue:
             moved += 1
         return moved
 
-    def retry_dead(self, queue_name: str, task_id: str = None):
-        """手动将死信队列中的任务重新入队"""
+    def retry_dead(self, queue_name: str, task_id: str = None, state_redis=None):
+        """手动将死信队列中的任务重新入队（blocked 用户自动跳过）
+
+        Args:
+            state_redis: 可选，传入后会检查 blocked 字段，跳过 blocked=1 的用户。
+        """
         dead_key = self.dead_key(queue_name)
+
+        # 推断平台前缀，用于检查 blocked 字段
+        _plat = "x" if ":x:" in queue_name else "ig" if ":ig:" in queue_name else None
+        _pfx = {"x": "twitter", "ig": "instagram"}.get(_plat) if _plat else None
+
+        def _is_blocked(task_dict):
+            if not state_redis or not _pfx:
+                return False
+            uid = str(task_dict.get("args", [None])[0]) if task_dict.get("args") else None
+            if not uid:
+                return False
+            return state_redis.hget(f"{_pfx}:{uid}:state", "blocked") == "1"
+
         if task_id is None:
-            # 重试全部
+            # 重试全部（blocked 用户跳过并从 dead 移除）
             dead_tasks = self.redis.lrange(dead_key, 0, -1)
+            pipe = self.redis.pipeline()
+            skipped = 0
             for task_json in dead_tasks:
                 task_dict = json.loads(task_json)
+                if _is_blocked(task_dict):
+                    pipe.lrem(dead_key, 0, task_json)
+                    skipped += 1
+                    continue
                 task_dict["retry_count"] = 0
-                self.redis.rpush(self.queue_key(queue_name), json.dumps(task_dict))
-                self.redis.hset(self.task_meta_key(queue_name, task_dict["task_id"]), "status", "pending")
-            self.redis.delete(dead_key)
+                pipe.rpush(self.queue_key(queue_name), json.dumps(task_dict))
+                pipe.hset(self.task_meta_key(queue_name, task_dict["task_id"]), "status", "pending")
+                pipe.lrem(dead_key, 0, task_json)
+            pipe.execute()
+            if skipped:
+                logger.info(f"Skipped {skipped} blocked users from dead queue '{queue_name}'")
         else:
             # 重试单个
             dead_tasks = self.redis.lrange(dead_key, 0, -1)
             for task_json in dead_tasks:
                 if json.loads(task_json)["task_id"] == task_id:
                     task_dict = json.loads(task_json)
+                    if _is_blocked(task_dict):
+                        self.redis.lrem(dead_key, 0, task_json)
+                        logger.info(f"Task {task_id} is blocked, removed from dead")
+                        break
                     task_dict["retry_count"] = 0
                     self.redis.lrem(dead_key, 0, task_json)
                     self.redis.rpush(self.queue_key(queue_name), json.dumps(task_dict))
