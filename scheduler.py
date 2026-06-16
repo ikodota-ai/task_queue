@@ -136,15 +136,21 @@ def run(platform: str, interval: int, dry_run: bool = False, limit: int = 0):
             pipe.hget(k, "full_done")
             pipe.hget(k, "incr_last_time")
             pipe.hget(k, "last_scrape_time")
+            pipe.hget(k, "blocked")
         results = pipe.execute()
 
         # 4. 筛选
         candidates = []
+        blocked = 0
         for i, uid in enumerate(uids):
-            full_done = results[i * 3]
-            incr_last = results[i * 3 + 1]
-            last_scrape = results[i * 3 + 2]
+            full_done = results[i * 4]
+            incr_last = results[i * 4 + 1]
+            last_scrape = results[i * 4 + 2]
+            is_blocked = results[i * 4 + 3]
 
+            if is_blocked == "1":
+                blocked += 1
+                continue
             if full_done != "1":
                 continue
             if uid in existing_in_queue:
@@ -158,7 +164,7 @@ def run(platform: str, interval: int, dry_run: bool = False, limit: int = 0):
             elif now - last_ts >= interval:
                 candidates.append((uid, now - last_ts))
 
-        logger.info(f"[{plat}] state_keys={len(state_keys)} filtered={len(candidates)} "
+        logger.info(f"[{plat}] state_keys={len(state_keys)} blocked={blocked} filtered={len(candidates)} "
                      f"(in_queue={len(existing_in_queue)} crawling={len(crawling)})")
 
         if limit and total + len(candidates) > limit:

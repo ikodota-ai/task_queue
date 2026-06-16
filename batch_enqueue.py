@@ -130,22 +130,31 @@ def get_users(platform: str, country_filter=None, user_filter=None, skip_full_do
         return users
 
     sr = _get_state_redis()
-    # Pipeline 批量查 full_done，避免逐条网络往返
+    # Pipeline 批量查 full_done + blocked，避免逐条网络往返
     pipe = sr.pipeline()
     for uid, _ in users:
         pipe.hget(f"{pfx}:{uid}:state", "full_done")
+        pipe.hget(f"{pfx}:{uid}:state", "blocked")
     results = pipe.execute()
 
     result = []
-    skipped = 0
+    skipped_fd = 0
+    skipped_blocked = 0
     for i, (uid, cid) in enumerate(users):
-        if results[i] == "1":
-            skipped += 1
+        full_done = results[i * 2]
+        blocked = results[i * 2 + 1]
+        if blocked == "1":
+            skipped_blocked += 1
+            continue
+        if full_done == "1":
+            skipped_fd += 1
             continue
         result.append((uid, cid))
 
-    if skipped:
-        print(f"[skip] {skipped} users already have full_done=1")
+    if skipped_fd:
+        print(f"[skip] {skipped_fd} users already have full_done=1")
+    if skipped_blocked:
+        print(f"[skip] {skipped_blocked} users are blocked (rate-limited)")
     return result
 
 

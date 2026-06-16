@@ -997,6 +997,11 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
             "Task will retry with exponential backoff.")
     if processed == 0:
         logger.warning(f"IG crawl for {user_id}: 0 posts found (possibly rate-limited)")
+        _state_redis().hset(_skey(user_id), mapping={
+            "blocked": "1",
+            "blocked_reason": "0 posts (rate-limited)",
+            "blocked_at": str(int(time.time())),
+        })
 
     # 全量完成时写入状态（增量不写这些字段）
     actual_pages = scroll_idx + 1

@@ -136,10 +136,12 @@ def run(platform: str, maxpage: int, dry_run: bool = False, limit: int = 0):
         if not rows:
             continue
 
-        # 2. Pipeline 批量查 Redis state 是否存在
+        # 2. Pipeline 批量查 Redis state 是否存在，以及是否 blocked
         pipe = sr.pipeline()
         for r in rows:
-            pipe.exists(f"instagram:{r['username']}:state" if plat == "ig" else f"twitter:{r['username']}:state")
+            prefix = "instagram" if plat == "ig" else "twitter"
+            pipe.exists(f"{prefix}:{r['username']}:state")
+            pipe.hget(f"{prefix}:{r['username']}:state", "blocked")
         results = pipe.execute()
 
         # 3. 去重：已在 full 队列中的
@@ -150,8 +152,11 @@ def run(platform: str, maxpage: int, dry_run: bool = False, limit: int = 0):
 
         for i, row in enumerate(rows):
             username = row["username"]
-            has_state = results[i]
+            has_state = results[i * 2]
+            is_blocked = results[i * 2 + 1]
 
+            if is_blocked == "1":
+                continue  # 被限流标记，跳过
             if has_state:
                 continue  # 已有状态记录，不是新用户
             if username in queue_existing:
