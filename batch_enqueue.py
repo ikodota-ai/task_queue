@@ -106,7 +106,8 @@ def get_users(platform: str, country_filter=None, user_filter=None, skip_full_do
         users = [(u, None) for u in user_filter]
     elif country_filter:
         # 如果用户指定了泰国，就不再硬性排除泰国
-        cids = list(country_filter)
+        # country_filter 元素可能是字符串，统一转 int 比较
+        cids = [int(c) for c in country_filter]
         if THAILAND_COUNTRY_ID in cids:
             # 包含泰国：不做 country != 5 过滤
             placeholders = ",".join(["%s"] * len(cids))
