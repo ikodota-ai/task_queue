@@ -849,7 +849,8 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
         raise RuntimeError(
             f"X crawl for {user_id}: 0 posts found, likely rate-limited. "
             "Task will retry with exponential backoff.")
-    if processed == 0:
+    # 增量抓取 0 条是正常的（没新帖），不应标记 blocked
+    if processed == 0 and not incremental:
         logger.warning(f"X crawl for {user_id}: 0 posts found (possibly rate-limited)")
         # 标记为 blocked，后续入队脚本会跳过此用户
         _state_redis().hset(_skey(user_id), mapping={
