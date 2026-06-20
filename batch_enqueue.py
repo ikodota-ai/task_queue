@@ -105,17 +105,32 @@ def get_users(platform: str, country_filter=None, user_filter=None, skip_full_do
         # 指定用户，不去重
         users = [(u, None) for u in user_filter]
     elif country_filter:
-        placeholders = ",".join(["%s"] * len(country_filter))
-        cur.execute(f"""
-            SELECT {field} as username, country
-            FROM la_star_info
-            WHERE country != %s
-              AND {field} IS NOT NULL AND {field} != ''
-              AND country IN ({placeholders})
-            ORDER BY country, {field}
-        """, [THAILAND_COUNTRY_ID] + list(country_filter))
+        # 如果用户指定了泰国，就不再硬性排除泰国
+        cids = list(country_filter)
+        if THAILAND_COUNTRY_ID in cids:
+            # 包含泰国：不做 country != 5 过滤
+            placeholders = ",".join(["%s"] * len(cids))
+            cur.execute(f"""
+                SELECT {field} as username, country
+                FROM la_star_info
+                WHERE {field} IS NOT NULL AND {field} != ''
+                  AND country IN ({placeholders})
+                ORDER BY country, {field}
+            """, cids)
+        else:
+            # 不包含泰国：保持原有逻辑，排除泰国
+            placeholders = ",".join(["%s"] * len(cids))
+            cur.execute(f"""
+                SELECT {field} as username, country
+                FROM la_star_info
+                WHERE country != %s
+                  AND {field} IS NOT NULL AND {field} != ''
+                  AND country IN ({placeholders})
+                ORDER BY country, {field}
+            """, [THAILAND_COUNTRY_ID] + cids)
         users = [(r["username"], r["country"]) for r in cur.fetchall()]
     else:
+        # 默认模式：排除泰国（保持向后兼容）
         cur.execute(f"""
             SELECT {field} as username, country
             FROM la_star_info
