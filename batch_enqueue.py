@@ -72,7 +72,7 @@ def _get_queue_redis():
 
 
 def list_countries(platform: str):
-    """列出所有非泰国国家及其对应平台的用户数"""
+    """列出所有国家及其对应平台的用户数"""
     db = _get_db()
     cur = db.cursor()
     field = PLATFORM_CONFIG[platform]["db_field"]
@@ -83,9 +83,9 @@ def list_countries(platform: str):
     cur.execute(f"""
         SELECT country, COUNT(*) as cnt
         FROM la_star_info
-        WHERE country != %s AND {field} IS NOT NULL AND {field} != ''
+        WHERE {field} IS NOT NULL AND {field} != ''
         GROUP BY country ORDER BY cnt DESC
-    """, (THAILAND_COUNTRY_ID,))
+    """)
 
     for r in cur.fetchall():
         cname = country_names.get(str(r["country"]), f"unknown({r['country']})")
