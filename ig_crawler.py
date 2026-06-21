@@ -990,8 +990,14 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
     # 已完成，清除进度
     _state_redis().hdel(_skey(user_id), "posts_done")
 
-    # processed==0 且到底 → 可能限流，抛异常进 retry 指数退避等待
+    # processed==0 且到底 → 可能限流/无帖/私密，标记 blocked 后抛异常进 retry
     if processed == 0 and same_height >= 10:
+        if not incremental:
+            _state_redis().hset(_skey(user_id), mapping={
+                "blocked": "1",
+                "blocked_reason": "0 posts (rate-limited)",
+                "blocked_at": str(int(time.time())),
+            })
         raise RuntimeError(
             f"IG crawl for {user_id}: 0 posts found, likely rate-limited. "
             "Task will retry with exponential backoff.")
