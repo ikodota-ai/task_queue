@@ -84,13 +84,19 @@ _cached_db = None
 
 def _get_db():
     global _cached_db
-    if _cached_db is None or not _cached_db.open:
-        _cached_db = pymysql.connect(
-            host=cfg["mysql_host"], port=cfg["mysql_port"],
-            user=cfg["mysql_user"], password=cfg["mysql_password"],
-            database=cfg["mysql_db"], charset="utf8mb4",
-            autocommit=False,
-        )
+    if _cached_db is not None:
+        try:
+            _cached_db.ping(reconnect=True)
+            return _cached_db
+        except Exception:
+            _cached_db = None
+    _cached_db = pymysql.connect(
+        host=cfg["mysql_host"], port=cfg["mysql_port"],
+        user=cfg["mysql_user"], password=cfg["mysql_password"],
+        database=cfg["mysql_db"], charset="utf8mb4",
+        autocommit=False,
+        connect_timeout=5, read_timeout=30,
+    )
     return _cached_db
 
 def _close_db():
