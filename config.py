@@ -65,6 +65,9 @@ def load_config(env_file: str = None):
         "deepseek_api_key": os.getenv("DEEPSEEK_API_KEY", ""),
         "deepseek_api_base": os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1"),
         "deepseek_model": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+
+        # Storage / CDN
+        "storage_base_url": os.getenv("STORAGE_BASE_URL", ""),
     }
 
 
