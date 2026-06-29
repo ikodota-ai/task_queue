@@ -1075,6 +1075,7 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
                 continue
 
             # ---- 7. 下载图片 ----
+            saved_paths = []
             for idx, img_url in enumerate(all_media, 1):
                 ext = ".png" if ".png" in img_url else ".jpg"
                 filename = f"{tweet_id}_{idx:04d}{ext}"
@@ -1100,10 +1101,25 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
                     f"dl:x", "sub_download_image",
                     img_url, save_path, db_id, "x", user_id,
                 )
+                saved_paths.append(save_path)
                 processed += 1
 
             _mark_processed(user_id, tweet_id)
             new_posts += 1
+
+            # ---- 8. 写入 la_article (AI翻译 + 电影匹配) ----
+            if star_id and tweet_text:
+                try:
+                    # 提取原始文本中的 hashtags
+                    import re as _re
+                    raw_hashtags = _re.findall(r'#\w+', tweet_text)
+                    _insert_tweet_article(
+                        user_id, tweet_id, star_id, tweet_text,
+                        saved_paths, raw_hashtags, post_ts,
+                    )
+                except Exception as e:
+                    logger.error(f"Article insert failed for {tweet_id}: {e}")
+
             time.sleep(0.3)
 
         if max_new_posts and new_posts >= max_new_posts:
@@ -1132,6 +1148,245 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
                       timeline_last_images=str(processed))
     logger.info(f"Timeline crawl done for {user_id}: {new_posts} new posts, {processed} images")
     return processed
+
+
+# -----------------------------------------------------------
+# 文章写入 — AI翻译 + 电影匹配 + 插入 la_article
+# -----------------------------------------------------------
+
+# star_id → couple_ids 缓存
+_star_couple_cache = None
+
+
+def _load_star_couple_map():
+    """加载 star_id → [couple_id, ...] 映射（只加载一次）。"""
+    global _star_couple_cache
+    if _star_couple_cache is not None:
+        return _star_couple_cache
+    import json as _json
+    db = _get_db()
+    cur = db.cursor()
+    cur.execute("SELECT id, star FROM la_couple")
+    _star_couple_cache = {}
+    for r in cur.fetchall():
+        for sid in _json.loads(r["star"]):
+            _star_couple_cache.setdefault(sid, []).append(r["id"])
+    logger.info(f"Loaded {len(_star_couple_cache)} star→couple mappings")
+    return _star_couple_cache
+
+
+def _find_couple_ids(star_id: int) -> list:
+    """查找 star_id 所属的所有 couple IDs。"""
+    return _load_star_couple_map().get(star_id, [])
+
+
+def _translate_text(text: str, retries: int = 2) -> dict:
+    """调用 DeepSeek API 翻译泰文推文，返回 {cn_text, hashtags, error}。
+
+    Returns:
+        dict with keys: cn_text (str), hashtags (list), error (str or None)
+    """
+    import requests as _req
+
+    api_key = cfg.get("deepseek_api_key", "")
+    if not api_key:
+        return {"cn_text": text, "hashtags": [], "error": "DEEPSEEK_API_KEY not configured"}
+
+    api_base = cfg.get("deepseek_api_base", "https://api.deepseek.com/v1")
+    model = cfg.get("deepseek_model", "deepseek-chat")
+
+    prompt = (
+        "你是一个专业的泰语→中文翻译助手。请处理以下推文内容：\n\n"
+        "1. 将泰文翻译成中文\n"
+        "2. 提取文本中所有的 #标签（包括泰文和英文标签）\n"
+        "3. 如果推文内容引用了其他推文，提炼引用内容\n\n"
+        "请严格按照以下JSON格式返回，不要包含其他内容：\n"
+        '{"cn_text": "中文翻译文本", "hashtags": ["标签1", "标签2"]}'
+    )
+
+    for attempt in range(retries + 1):
+        try:
+            resp = _req.post(
+                f"{api_base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": text},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 1024,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"].strip()
+
+            # 提取 JSON
+            import json as _json
+            # 处理可能的 markdown 包裹
+            if content.startswith("```"):
+                content = content.split("\n", 2)[-1].rsplit("\n```", 1)[0]
+            result = _json.loads(content)
+            return {
+                "cn_text": result.get("cn_text", text),
+                "hashtags": result.get("hashtags", []),
+                "error": None,
+            }
+        except Exception as e:
+            logger.warning(f"DeepSeek API attempt {attempt + 1} failed: {e}")
+            if attempt < retries:
+                time.sleep(2)
+            else:
+                return {"cn_text": text, "hashtags": [], "error": str(e)}
+
+
+def _match_movie(hashtags: list) -> dict:
+    """匹配 hashtags 到 la_movies_info 中的电影，返回第一个匹配的 {id, name} 或 None。"""
+    if not hashtags:
+        return None
+    db = _get_db()
+    cur = db.cursor()
+    for tag in hashtags:
+        tag_clean = tag.lstrip("#").strip()
+        if not tag_clean:
+            continue
+        cur.execute(
+            "SELECT id, movie_name FROM la_movies_info WHERE movie_name LIKE %s LIMIT 1",
+            (f"%{tag_clean}%",),
+        )
+        row = cur.fetchone()
+        if row:
+            return {"id": row[0], "name": row[1]}
+    return None
+
+
+def _build_tweet_html(user_id: str, tweet_id: str, cn_text: str, original_text: str,
+                      image_paths: list, hashtags: list, post_ts) -> str:
+    """构建推文 HTML 内容。"""
+    from datetime import datetime
+
+    ts_str = datetime.fromtimestamp(post_ts).strftime("%Y-%m-%d %H:%M") if post_ts else ""
+    tweet_url = f"https://x.com/{user_id}/status/{tweet_id}"
+
+    # 转义 HTML
+    def _esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    parts = ['<div class="x-post">']
+
+    # 头部：作者 + 时间
+    parts.append('<div class="x-post-header">')
+    parts.append(f'<span class="x-post-author">@{_esc(user_id)}</span>')
+    if ts_str:
+        parts.append(f'<span class="x-post-time">{ts_str}</span>')
+    parts.append('</div>')
+
+    # 正文：翻译 + 原文
+    parts.append('<div class="x-post-body">')
+    if cn_text and cn_text != original_text:
+        parts.append(f'<p class="x-post-text-cn">{_esc(cn_text)}</p>')
+    parts.append(f'<p class="x-post-text-original">{_esc(original_text)}</p>')
+    parts.append('</div>')
+
+    # 媒体
+    if image_paths:
+        parts.append('<div class="x-post-media">')
+        for i, path in enumerate(image_paths):
+            parts.append(f'<img src="/{path}" alt="图片{i + 1}" class="x-post-img"/>')
+        parts.append('</div>')
+
+    # 标签
+    if hashtags:
+        parts.append('<div class="x-post-tags">')
+        for tag in hashtags:
+            tag_name = tag.lstrip("#")
+            parts.append(f'<a href="/tag/{_esc(tag_name)}" class="x-post-tag">#{_esc(tag_name)}</a>')
+        parts.append('</div>')
+
+    # 底部链接
+    parts.append('<div class="x-post-footer">')
+    parts.append(f'<a href="{tweet_url}" target="_blank" class="x-post-link">在 X 上查看</a>')
+    parts.append('</div>')
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
+def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
+                          original_text: str, image_paths: list,
+                          hashtags: list, post_ts) -> list:
+    """将推文转换并插入 la_article（每个 couple 一条）。
+
+    Returns:
+        插入的 article IDs 列表
+    """
+    # 1. AI 翻译
+    trans = _translate_text(original_text)
+    cn_text = trans["cn_text"]
+    all_hashtags = list(set(hashtags + trans.get("hashtags", [])))
+
+    # 2. 匹配电影
+    movie = _match_movie(all_hashtags)
+    movie_json = json.dumps(movie, ensure_ascii=False) if movie else None
+
+    # 3. 构建 HTML
+    content_html = _build_tweet_html(user_id, tweet_id, cn_text, original_text,
+                                     image_paths, all_hashtags, post_ts)
+
+    # 4. 标题：翻译文本第一行（不超过100字）
+    title = cn_text.split("\n")[0][:100] if cn_text else original_text[:100]
+
+    # 5. 封面图
+    cover_image = image_paths[0] if image_paths else ""
+
+    # 6. 查找 couple IDs
+    couple_ids = _find_couple_ids(star_id)
+    if not couple_ids:
+        logger.warning(f"No couple found for star_id={star_id}, skip article insert")
+        return []
+
+    # 7. 插入
+    tweet_url = f"https://x.com/{user_id}/status/{tweet_id}"
+    now = int(time.time())
+    article_ids = []
+
+    db = _get_db()
+    cur = db.cursor()
+    for cpid in couple_ids:
+        try:
+            # 去重：同一 URL + cpid 已存在则跳过
+            cur.execute(
+                "SELECT id FROM la_article WHERE url=%s AND cpid=%s LIMIT 1",
+                (tweet_url, cpid),
+            )
+            if cur.fetchone():
+                logger.debug(f"Article already exists for url={tweet_url} cpid={cpid}, skip")
+                continue
+
+            cur.execute(
+                "INSERT INTO la_article "
+                "(cid, cpid, title, url, movies, abstract, image, author, content, "
+                " click_virtual, click_actual, is_show, sort, create_time, update_time) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 1, 0, %s, %s)",
+                (3, cpid, title, tweet_url, movie_json,
+                 original_text[:500], cover_image, user_id, content_html,
+                 post_ts or now, now),
+            )
+            db.commit()
+            article_id = cur.lastrowid
+            article_ids.append(article_id)
+            logger.info(f"Article inserted: id={article_id} cpid={cpid} "
+                        f"title={title[:40]} movie={movie['name'] if movie else 'none'}")
+        except Exception as e:
+            logger.error(f"Failed to insert article for cpid={cpid}: {e}")
+
+    return article_ids
 
 
 # -----------------------------------------------------------
