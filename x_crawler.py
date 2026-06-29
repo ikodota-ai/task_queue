@@ -2,10 +2,12 @@
 x_crawler.py — X (Twitter) 爬虫消费者（任务队列版）
 
 从用户 media 页收集推文链接 → 进入推文详情页提取所有图片 URL → 发下载子任务
+timeline 模式：直接解析帖子页 article[data-testid='tweet'] 提取图片/视频封面/文本
 
 注册函数:
-  x_full_crawl(user_id)        — 全量抓取
-  x_incremental_crawl(user_id) — 增量抓取（从顶部直到碰已处理帖）
+  x_full_crawl(user_id)            — 全量抓取 (media页)
+  x_incremental_crawl(user_id)     — 增量抓取 (media页)
+  x_timeline_crawl(user_id, ...)   — 帖子页抓取 (图/视频封面/文本)
 """
 import hashlib
 import json
@@ -910,6 +912,229 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 
 
 # -----------------------------------------------------------
+# 帖子页抓取 (timeline) — 直接解析 article[data-testid='tweet']
+# -----------------------------------------------------------
+
+def _crawl_timeline(user_id: str, max_new_posts: int = 1,
+                    cutoff_seconds: int = 604800) -> int:
+    """抓取用户帖子页(非media)，提取图片/视频封面。
+
+    Args:
+        user_id: X 用户名
+        max_new_posts: 最多抓几条新帖（0=不限制）
+        cutoff_seconds: 时间截止秒数（早于此时间的帖跳过，默认7天）
+    Returns:
+        下载的图片数量
+    """
+    _start_heartbeat()
+
+    lock_key = f"x:{user_id}:crawling"
+    if not _state_redis().set(lock_key, "1", nx=True, ex=7200):
+        logger.warning(f"{user_id} is already being crawled by another worker, skipping")
+        return 0
+
+    try:
+        return _do_crawl_timeline(user_id, max_new_posts, cutoff_seconds)
+    finally:
+        _state_redis().delete(lock_key)
+
+
+def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) -> int:
+    driver = _get_driver()
+    processed = 0
+    new_posts = 0       # 本次新抓的推文数
+    cutoff_ts = int(time.time()) - cutoff_seconds
+
+    logger.info(f"Timeline crawl: https://x.com/{user_id} "
+                f"(max_new_posts={max_new_posts}, cutoff={cutoff_seconds}s)")
+
+    url = f"https://x.com/{user_id}"
+    driver.get(url)
+    time.sleep(5)
+
+    try:
+        WebDriverWait(driver, 8).until(
+            EC.presence_of_element_located((By.XPATH, "//article[@data-testid='tweet']"))
+        )
+    except Exception:
+        logger.warning(f"Timeline page load timeout for {user_id}")
+
+    star_id = _lookup_star_id(user_id)
+    if star_id is None:
+        logger.warning(f"No star_id found for {user_id}, DB insert disabled")
+
+    tq = TaskQueue()
+    tq.redis = _queue_redis()
+
+    seen_ids = set()
+    scroll_idx = 0
+    same_height = 0
+    prev_height = driver.execute_script("return document.documentElement.scrollHeight")
+    reached_cutoff = False
+
+    while True:
+        if _stop_requested:
+            logger.info("Stop requested, aborting timeline crawl")
+            break
+
+        articles = driver.find_elements(By.XPATH, "//article[@data-testid='tweet']")
+        logger.info(f"Timeline scroll {scroll_idx + 1}: {len(articles)} articles")
+
+        for article in articles:
+            if max_new_posts and new_posts >= max_new_posts:
+                logger.info(f"Reached max_new_posts limit ({max_new_posts})")
+                break
+
+            # ---- 1. 提取推文 ID ----
+            try:
+                status_link = article.find_element(
+                    By.XPATH, ".//a[contains(@href,'/status/')]"
+                ).get_attribute("href")
+            except Exception:
+                continue
+            tweet_id = _extract_tweet_id(status_link)
+            if not tweet_id:
+                continue
+            if tweet_id in seen_ids:
+                continue
+            seen_ids.add(tweet_id)
+
+            # ---- 2. 跳过已处理 ----
+            if _is_processed(user_id, tweet_id):
+                continue
+
+            # ---- 3. 提取时间戳，超时则停止 ----
+            try:
+                time_el = article.find_element(By.XPATH, ".//time")
+                dt_str = time_el.get_attribute("datetime")
+                if dt_str:
+                    from datetime import datetime, timezone
+                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    post_ts = int(dt.timestamp())
+                else:
+                    post_ts = None
+            except Exception:
+                post_ts = None
+
+            if post_ts and post_ts < cutoff_ts:
+                logger.info(f"Reached cutoff ({datetime.fromtimestamp(post_ts)}), stopping")
+                _mark_processed(user_id, tweet_id)
+                reached_cutoff = True
+                break
+
+            # ---- 4. 提取文本 (可选，记录日志) ----
+            try:
+                text_el = article.find_element(By.XPATH, ".//div[@data-testid='tweetText']")
+                tweet_text = text_el.text[:200] if text_el else ""
+            except Exception:
+                tweet_text = ""
+
+            logger.info(f"  New tweet: {tweet_id} @ {datetime.fromtimestamp(post_ts) if post_ts else '?'} "
+                        f"text={tweet_text[:60]}...")
+
+            # ---- 5. 提取图片 (data-testid='tweetPhoto') ----
+            image_urls = []
+            try:
+                photo_divs = article.find_elements(By.XPATH, ".//div[@data-testid='tweetPhoto']")
+                for pd in photo_divs:
+                    try:
+                        imgs = pd.find_elements(By.TAG_NAME, "img")
+                        for img in imgs:
+                            src = img.get_attribute("src")
+                            if src and "pbs.twimg.com" in src:
+                                # 去掉 &name= 后缀得原图 (或换 &name=orig)
+                                clean_src = re.sub(r'[?&]name=\w+', '', src)
+                                clean_src = clean_src + "?name=orig"
+                                if clean_src not in image_urls:
+                                    image_urls.append(clean_src)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # ---- 6. 提取视频封面 (video[poster]) ----
+            video_posters = []
+            try:
+                video_els = article.find_elements(By.XPATH, ".//div[@data-testid='videoPlayer']//video[@poster]")
+                for vel in video_els:
+                    try:
+                        poster = vel.get_attribute("poster")
+                        if poster and "pbs.twimg.com" in poster:
+                            video_posters.append(poster)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # 合并图片和视频封面
+            all_media = image_urls + video_posters
+            if not all_media:
+                # 纯文本帖 — 标记已处理，只计新帖数不下载
+                _mark_processed(user_id, tweet_id)
+                new_posts += 1
+                continue
+
+            # ---- 7. 下载图片 ----
+            for idx, img_url in enumerate(all_media, 1):
+                ext = ".png" if ".png" in img_url else ".jpg"
+                filename = f"{tweet_id}_{idx:04d}{ext}"
+                check_code = hashlib.md5(filename.encode()).hexdigest()
+                batch = f"/{user_id}/status/{tweet_id}/"
+                if star_id:
+                    try:
+                        db_id = _insert_star_instagram(
+                            star_id, f"x/image/{star_id}/{check_code}{ext}",
+                            batch, check_code, "x", post_ts
+                        )
+                        save_path = f"x/image/{star_id}/{check_code}{ext}"
+                    except Exception as e:
+                        logger.error(f"DB insert failed: {e}")
+                        db_id = None
+                        save_path = f"x/{user_id}/{filename}"
+                else:
+                    db_id = None
+                    save_path = f"x/{user_id}/{filename}"
+                if db_id == 0:
+                    db_id = None
+                tq.enqueue(
+                    f"dl:x", "sub_download_image",
+                    img_url, save_path, db_id, "x", user_id,
+                )
+                processed += 1
+
+            _mark_processed(user_id, tweet_id)
+            new_posts += 1
+            time.sleep(0.3)
+
+        if max_new_posts and new_posts >= max_new_posts:
+            break
+
+        if reached_cutoff:
+            break
+
+        # ---- 滚动加载更多 ----
+        driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
+        time.sleep(3)
+        scroll_idx += 1
+
+        new_h = driver.execute_script("return document.documentElement.scrollHeight")
+        if new_h == prev_height:
+            same_height += 1
+            if same_height >= 5:
+                logger.info("Page height not growing, reached bottom of timeline")
+                break
+        else:
+            same_height = 0
+        prev_height = new_h
+
+    if processed:
+        _update_state(user_id, last_scrape_time=time.time(),
+                      timeline_last_images=str(processed))
+    logger.info(f"Timeline crawl done for {user_id}: {new_posts} new posts, {processed} images")
+    return processed
+
+
+# -----------------------------------------------------------
 # 注册任务
 # -----------------------------------------------------------
 
@@ -934,6 +1159,26 @@ def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
     return result
 
 
+@register_task("x_timeline_crawl")
+def x_timeline_crawl(user_id: str, db_task_id: int = None,
+                     max_new_posts: int = None, cutoff_seconds: int = None) -> str:
+    """帖子页抓取：从 timeline 提取最新图片/视频封面。
+
+    Args:
+        user_id: X 用户名
+        max_new_posts: 最多抓几条新帖 (默认1)
+        cutoff_seconds: 时间截止秒数 (默认604800 = 7天)
+    """
+    if max_new_posts is None:
+        max_new_posts = 1
+    if cutoff_seconds is None:
+        cutoff_seconds = 604800  # 7 天
+    count = _crawl_timeline(user_id, max_new_posts=max_new_posts,
+                            cutoff_seconds=cutoff_seconds)
+    result = f"timeline crawl: {count} images ({count} new posts)"
+    return result
+
+
 # -----------------------------------------------------------
 # CLI
 # -----------------------------------------------------------
@@ -941,8 +1186,8 @@ def x_incremental_crawl(user_id: str, db_task_id: int = None) -> str:
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("full", "incr", "all"), default="all",
-                        help="full=全量, incr=增量, all=全量+增量")
+    parser.add_argument("--mode", choices=("full", "incr", "timeline", "all"), default="all",
+                        help="full=全量, incr=增量, timeline=帖子页, all=全量+增量")
     parser.add_argument("--headless", dest="headless", action="store_const", const=True,
                         help="强制 headless 模式")
     parser.add_argument("--no-headless", dest="headless", action="store_const", const=False,
@@ -959,6 +1204,9 @@ def main():
     elif opt_args.mode == "incr":
         queue_names = ["crawl:x:incr"]
         worker_id = "x-crawler-incr"
+    elif opt_args.mode == "timeline":
+        queue_names = ["crawl:x:timeline"]
+        worker_id = "x-crawler-timeline"
     else:
         queue_names = ["crawl:x:incr", "crawl:x:full"]
         worker_id = "x-crawler"

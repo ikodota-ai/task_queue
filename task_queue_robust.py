@@ -344,6 +344,7 @@ class TaskQueue:
         "crawl:ig:max1000": "ig_max1000_crawl",
         "crawl:x:full": "x_full_crawl",
         "crawl:x:incr": "x_incremental_crawl",
+        "crawl:x:timeline": "x_timeline_crawl",
         "crawl:x:max1000": "x_max1000_crawl",
         "dl:ig": "sub_download_image",
         "dl:x": "sub_download_image",

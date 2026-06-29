@@ -261,7 +261,6 @@ def batch_enqueue(platform: str, users, maxpage: int, dry_run: bool = False, pri
         if enqueued % 100 == 0:
             print(f"  ... {enqueued}/{len(users)}")
 
-    db.close()
     print(f"\nDone. {enqueued} users enqueued to {queue_name}")
     print(f"Queue length: {qr.llen(queue_key)} (after)")
 

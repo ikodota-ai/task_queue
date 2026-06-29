@@ -42,13 +42,18 @@ def api_enqueue():
     maxpage = request.form.get("maxpage", "").strip()
     auto_repeat = request.form.get("auto_repeat") == "1"
 
-    if platform not in ("ig", "x") or task_type not in ("full", "incr") or not user_id:
+    if platform not in ("ig", "x") or task_type not in ("full", "incr", "timeline") or not user_id:
         return jsonify({"error": "invalid params"}), 400
 
     # 入队 Redis
     tq = _get_tq()
     queue_name = f"crawl:{platform}:{task_type}"
-    func_name = f"{platform}_full_crawl" if task_type == "full" else f"{platform}_incremental_crawl"
+    if task_type == "timeline":
+        func_name = f"{platform}_timeline_crawl"
+    elif task_type == "full":
+        func_name = f"{platform}_full_crawl"
+    else:
+        func_name = f"{platform}_incremental_crawl"
     if maxpage and maxpage.isdigit() and task_type == "full":
         tid = tq.enqueue_unique(queue_name, func_name, user_id, 0, int(maxpage))
     else:
@@ -297,7 +302,7 @@ def api_status():
         # ===== Redis — 用 pipeline 批量查 =====
         pipe = qr.pipeline()
         for q in ["crawl:ig:full", "crawl:ig:incr",
-                  "crawl:x:full", "crawl:x:incr",
+                  "crawl:x:full", "crawl:x:incr", "crawl:x:timeline",
                   "dl:ig", "dl:x"]:
             pipe.llen(f"queue:{q}")
             pipe.hlen(f"processing:{q}")
@@ -307,7 +312,7 @@ def api_status():
 
         queues = {}
         qnames = ["crawl:ig:full", "crawl:ig:incr",
-                  "crawl:x:full", "crawl:x:incr",
+                  "crawl:x:full", "crawl:x:incr", "crawl:x:timeline",
                   "dl:ig", "dl:x"]
         for i, q in enumerate(qnames):
             queues[q] = {
@@ -338,7 +343,7 @@ def api_status():
 
         # ===== 活跃抓取 (只取 processing key，不逐个查 meta) =====
         active_crawls = []
-        for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr"]:
+        for q in ["crawl:ig:full", "crawl:ig:incr", "crawl:x:full", "crawl:x:incr", "crawl:x:timeline"]:
             if queues[q]["processing"]:
                 pipe2 = qr.pipeline()
                 tids = list(qr.hgetall(f"processing:{q}").keys())
@@ -509,7 +514,7 @@ th{color:#6a8a9e;font-weight:normal;font-size:10px;font-size:1.5rem;}
         <option value="ig">IG</option><option value="x">X</option>
       </select>
       <select id="enq-type" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;">
-        <option value="full">全量</option><option value="incr">增量</option>
+        <option value="full">全量</option><option value="incr">增量</option><option value="timeline">帖子</option>
       </select>
       <input id="enq-user" placeholder="user_id" style="background:#162636;color:#bcc8d4;border:1px solid #2a4a5a;padding:4px 8px;border-radius:3px;font-size:11px;font-size:1.5rem;;width:140px">
       <button type="submit" style="background:#5af;color:#000;border:none;padding:4px 12px;border-radius:3px;font-size:11px;font-size:1.5rem;;cursor:pointer;font-weight:bold">入队</button>
