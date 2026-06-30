@@ -1280,12 +1280,12 @@ def _match_movie(hashtags: list) -> dict:
     return None
 
 
-def _build_tweet_html(cn_text: str, original_text: str, image_paths: list) -> str:
-    """构建推文 HTML（<p>翻译+图片</p><p>原文</p>）。"""
+def _build_tweet_html(user_id: str, cn_text: str, original_text: str,
+                      image_paths: list, post_ts) -> str:
+    """构建推文 HTML（<p>翻译+图片</p><p>原文</p><p>@user · 时间</p>）。"""
     def _esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    # 图片标签（不拼接 CDN，直接用相对路径或原 URL）
     img_tags = ""
     for path in image_paths:
         img_tags += f'<img src="{path}" alt="" data-href="" style=""/>'
@@ -1295,6 +1295,11 @@ def _build_tweet_html(cn_text: str, original_text: str, image_paths: list) -> st
 
     if cn_text and cn_text != original_text and original_text.strip():
         parts.append(f'<p style="color:#999;">原文: {_esc(original_text)}</p>')
+
+    if post_ts:
+        from datetime import datetime
+        ts_str = datetime.fromtimestamp(post_ts).strftime("%m-%d %H:%M")
+        parts.append(f"<p>@{_esc(user_id)} · {ts_str}</p>")
 
     return "\n".join(parts)
 
@@ -1322,7 +1327,8 @@ def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
     movie_json = json.dumps(movie, ensure_ascii=False) if movie else None
 
     # 3. 构建 HTML
-    content_html = _build_tweet_html(cn_text, original_text, image_paths)
+    content_html = _build_tweet_html(user_id, cn_text, original_text,
+                                     image_paths, post_ts)
 
     # 4. 查找 couples
     couples = _find_couple_ids(star_id)
