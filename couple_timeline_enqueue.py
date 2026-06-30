@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--cutoff", type=int, default=604800, help="时间截止秒数 (default: 604800 = 7天)")
     parser.add_argument("--extra-users", type=str, default=None,
                         help="额外媒体账号，逗号分隔，如 'user1,user2'")
+    parser.add_argument("--media-only", action="store_true",
+                        help="只入队额外媒体号，不包含 couple stars")
     args = parser.parse_args()
 
     db = pymysql.connect(
@@ -39,37 +41,42 @@ def main():
     )
     cur = db.cursor()
 
-    # 1. 收集所有 couple star_ids
-    cur.execute("SELECT star FROM la_couple")
-    star_ids = set()
-    for r in cur.fetchall():
-        for sid in json.loads(r["star"]):
-            star_ids.add(sid)
-
-    # 2. 查对应的 X 用户名
-    if star_ids:
-        placeholders = ",".join(["%s"] * len(star_ids))
-        cur.execute(
-            f"SELECT id, twitter FROM la_star_info "
-            f"WHERE id IN ({placeholders}) AND twitter IS NOT NULL AND twitter != ''",
-            list(star_ids),
-        )
-        users = [(r["twitter"], r["id"]) for r in cur.fetchall()]
-    else:
-        users = []
-
-    # 3. 额外媒体账号
+    # 1. 额外媒体账号
     extra_users = []
     if args.extra_users:
         extra_users = [u.strip() for u in args.extra_users.split(",") if u.strip()]
 
+    if args.media_only:
+        # 只入队媒体号，不查 couple
+        users = []
+    else:
+        # 2. 收集所有 couple star_ids
+        cur.execute("SELECT star FROM la_couple")
+        star_ids = set()
+        for r in cur.fetchall():
+            for sid in json.loads(r["star"]):
+                star_ids.add(sid)
+
+        # 3. 查对应的 X 用户名
+        if star_ids:
+            placeholders = ",".join(["%s"] * len(star_ids))
+            cur.execute(
+                f"SELECT id, twitter FROM la_star_info "
+                f"WHERE id IN ({placeholders}) AND twitter IS NOT NULL AND twitter != ''",
+                list(star_ids),
+            )
+            users = [(r["twitter"], r["id"]) for r in cur.fetchall()]
+        else:
+            users = []
+
     db.close()
 
-    print(f"Couple stars with X: {len(users)}")
+    if not args.media_only:
+        print(f"Couple stars with X: {len(users)}")
     if extra_users:
         print(f"Extra media users: {len(extra_users)}")
 
-    # 去重（couple stars 和 extra_users 可能有重叠）
+    # 去重
     all_users = list(set([u[0] for u in users] + extra_users))
     print(f"Unique users: {len(all_users)}")
 
