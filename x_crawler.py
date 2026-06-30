@@ -1286,14 +1286,18 @@ def _build_tweet_html(user_id: str, cn_text: str, original_text: str,
     def _esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    cdn = cfg.get("storage_base_url", "").rstrip("/")
     img_tags = ""
     for path in image_paths:
-        img_tags += f'<img src="{path}" alt="" data-href="" style=""/>'
+        full = f"{cdn}/{path}" if cdn else path
+        img_tags += f'<img src="{full}" alt="" data-href="" style=""/>'
 
-    display_text = cn_text if cn_text and cn_text != original_text else original_text
+    display_text = cn_text if cn_text else original_text
     parts = [f"<p>{_esc(display_text)}{img_tags}</p>"]
 
-    if cn_text and cn_text != original_text and original_text.strip():
+    # 仅当原文非中文且与翻译不同时才显示原文
+    is_cn = any('一' <= c <= '鿿' for c in (original_text or ""))
+    if cn_text and original_text.strip() and cn_text != original_text and not is_cn:
         parts.append(f'<p style="color:#999;">原文: {_esc(original_text)}</p>')
 
     if post_ts:
