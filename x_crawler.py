@@ -963,6 +963,17 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
     if star_id is None:
         logger.warning(f"No star_id found for {user_id}, DB insert disabled")
 
+    # 提取头像：优先 la_star_info.avatar，否则从推文页面提取
+    avatar_url = _get_star_avatar(star_id) if star_id else ""
+    if not avatar_url:
+        try:
+            avatar_el = driver.find_element(
+                By.XPATH, "//div[@data-testid='Tweet-User-Avatar']//img"
+            )
+            avatar_url = avatar_el.get_attribute("src") or ""
+        except Exception:
+            pass
+
     tq = TaskQueue()
     tq.redis = _queue_redis()
 
@@ -1044,7 +1055,7 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
                             if src and "pbs.twimg.com" in src:
                                 # 去掉 &name= 后缀得原图 (或换 &name=orig)
                                 clean_src = re.sub(r'[?&]name=\w+', '', src)
-                                clean_src = clean_src + "?name=orig"
+                                # clean_src = clean_src + "?name=orig"
                                 if clean_src not in image_urls:
                                     image_urls.append(clean_src)
                     except Exception:
@@ -1110,12 +1121,12 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
             # ---- 8. 写入 la_article (AI翻译 + 电影匹配) ----
             if star_id and tweet_text:
                 try:
-                    # 提取原始文本中的 hashtags
                     import re as _re
                     raw_hashtags = _re.findall(r'#\w+', tweet_text)
                     _insert_tweet_article(
                         user_id, tweet_id, star_id, tweet_text,
                         saved_paths, raw_hashtags, post_ts,
+                        avatar_url=avatar_url,
                     )
                 except Exception as e:
                     logger.error(f"Article insert failed for {tweet_id}: {e}")
@@ -1169,9 +1180,10 @@ def _load_star_couple_map():
     cur.execute("SELECT id, name, star FROM la_couple")
     _star_couple_cache = {}
     for r in cur.fetchall():
-        for sid in _json.loads(r["star"]):
+        cid, cname, star_json = r[0], r[1], r[2]
+        for sid in _json.loads(star_json):
             _star_couple_cache.setdefault(sid, []).append(
-                {"id": r["id"], "name": r["name"]}
+                {"id": cid, "name": cname}
             )
     logger.info(f"Loaded {len(_star_couple_cache)} star→couple mappings")
     return _star_couple_cache
@@ -1268,47 +1280,37 @@ def _match_movie(hashtags: list) -> dict:
     return None
 
 
-def _build_tweet_html(user_id: str, tweet_id: str, cn_text: str, original_text: str,
-                      image_paths: list, post_ts) -> str:
-    """构建推文 HTML（简单格式：<p>文字+图片</p><blockquote>引用</blockquote>）。"""
-    from datetime import datetime
-
-    cdn_base = cfg.get("storage_base_url", "").rstrip("/")
-
-    # 转义 HTML
+def _build_tweet_html(cn_text: str, original_text: str, image_paths: list) -> str:
+    """构建推文 HTML（<p>翻译+图片</p><p>原文</p>）。"""
     def _esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    # 图片标签
+    # 图片标签（不拼接 CDN，直接用相对路径或原 URL）
     img_tags = ""
-    for i, path in enumerate(image_paths):
-        full_url = f"{cdn_base}/{path}" if cdn_base else f"/{path}"
-        img_tags += f'<img src="{full_url}" alt="" data-href="" style=""/>'
+    for path in image_paths:
+        img_tags += f'<img src="{path}" alt="" data-href="" style=""/>'
 
-    # 构建内容：翻译文本 + 图片放在同一 <p>
     display_text = cn_text if cn_text and cn_text != original_text else original_text
-    parts = []
-    parts.append(f"<p>{_esc(display_text)}{img_tags}</p>")
+    parts = [f"<p>{_esc(display_text)}{img_tags}</p>"]
 
-    # 原文（如果和翻译不同且不为空）
     if cn_text and cn_text != original_text and original_text.strip():
-        parts.append(f'<p style="color:#999;font-size:0.9em;">原文: {_esc(original_text)}</p>')
-
-    # 时间戳
-    if post_ts:
-        ts_str = datetime.fromtimestamp(post_ts).strftime("%Y-%m-%d %H:%M")
-        tweet_url = f"https://x.com/{user_id}/status/{tweet_id}"
-        parts.append(
-            f'<p><a href="{tweet_url}" target="_blank" style="color:#1d9bf0;">'
-            f'@{_esc(user_id)} · {ts_str}</a></p>'
-        )
+        parts.append(f'<p style="color:#999;">原文: {_esc(original_text)}</p>')
 
     return "\n".join(parts)
 
 
+def _get_star_avatar(star_id: int) -> str:
+    """读取 la_star_info.avatar 字段。"""
+    db = _get_db()
+    cur = db.cursor()
+    cur.execute("SELECT avatar FROM la_star_info WHERE id=%s", (star_id,))
+    row = cur.fetchone()
+    return row[0] if row and row[0] else ""
+
+
 def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
                           original_text: str, image_paths: list,
-                          hashtags: list, post_ts) -> list:
+                          hashtags: list, post_ts, avatar_url: str = "") -> list:
     """将推文转换并插入 la_article（每个 couple 一条）。"""
     # 1. AI 翻译
     trans = _translate_text(original_text)
@@ -1320,8 +1322,7 @@ def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
     movie_json = json.dumps(movie, ensure_ascii=False) if movie else None
 
     # 3. 构建 HTML
-    content_html = _build_tweet_html(user_id, tweet_id, cn_text, original_text,
-                                     image_paths, post_ts)
+    content_html = _build_tweet_html(cn_text, original_text, image_paths)
 
     # 4. 查找 couples
     couples = _find_couple_ids(star_id)
@@ -1329,14 +1330,10 @@ def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
         logger.warning(f"No couple found for star_id={star_id}, skip article insert")
         return []
 
-    # 5. 封面图（CDN 完整 URL）
-    cdn_base = cfg.get("storage_base_url", "").rstrip("/")
-    cover_image = ""
-    if image_paths:
-        cover_image = f"{cdn_base}/{image_paths[0]}" if cdn_base else image_paths[0]
+    # 5. 封面图：优先 la_star_info.avatar，否则用推文内提取的头像
+    cover_image = avatar_url or _get_star_avatar(star_id)
 
-    # 6. 插入
-    tweet_url = f"https://x.com/{user_id}/status/{tweet_id}"
+    # 6. 插入（url 留空）
     now = int(time.time())
     article_ids = []
 
@@ -1346,26 +1343,25 @@ def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
         cpid = cp["id"]
         cp_name = cp["name"]
 
-        # 标题：[CP名称] 翻译文本第一行
         title_line = cn_text.split("\n")[0][:80] if cn_text else original_text[:80]
         title = f"[{cp_name}] {title_line}"
 
         try:
-            # 去重
+            # 去重用 tweet_id + cpid
             cur.execute(
-                "SELECT id FROM la_article WHERE url=%s AND cpid=%s LIMIT 1",
-                (tweet_url, cpid),
+                "SELECT id FROM la_article WHERE title=%s AND cpid=%s LIMIT 1",
+                (title, cpid),
             )
             if cur.fetchone():
-                logger.debug(f"Article exists for url={tweet_url} cpid={cpid}, skip")
+                logger.debug(f"Article exists: title={title[:40]} cpid={cpid}, skip")
                 continue
 
             cur.execute(
                 "INSERT INTO la_article "
                 "(cid, cpid, title, url, movies, abstract, image, author, content, "
                 " click_virtual, click_actual, is_show, sort, create_time, update_time) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 1, 0, %s, %s)",
-                (3, cpid, title, tweet_url, movie_json,
+                "VALUES (%s, %s, %s, '', %s, %s, %s, %s, %s, 0, 0, 1, 0, %s, %s)",
+                (3, cpid, title, movie_json,
                  original_text[:500], cover_image, user_id, content_html,
                  post_ts or now, now),
             )
