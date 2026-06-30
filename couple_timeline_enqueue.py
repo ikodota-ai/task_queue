@@ -24,7 +24,7 @@ from config import cfg
 def main():
     parser = argparse.ArgumentParser(description="couple star timeline 入队")
     parser.add_argument("--apply", action="store_true", help="实际入队（默认仅预览）")
-    parser.add_argument("--max-new", type=int, default=1, help="每人最多抓几帖 (default: 1)")
+    parser.add_argument("--max-new", type=int, default=0, help="每人最多抓几帖 (0=不限制, 靠cutoff+去重控制)")
     parser.add_argument("--cutoff", type=int, default=604800, help="时间截止秒数 (default: 604800 = 7天)")
     parser.add_argument("--extra-users", type=str, default=None,
                         help="额外媒体账号，逗号分隔，如 'user1,user2'")

@@ -915,7 +915,7 @@ def _do_crawl(user_id: str, incremental: bool = False, maxpage: int = 500) -> in
 # 帖子页抓取 (timeline) — 直接解析 article[data-testid='tweet']
 # -----------------------------------------------------------
 
-def _crawl_timeline(user_id: str, max_new_posts: int = 1,
+def _crawl_timeline(user_id: str, max_new_posts: int = 0,
                     cutoff_seconds: int = 604800) -> int:
     """抓取用户帖子页(非media)，提取图片/视频封面。
 
@@ -1419,11 +1419,11 @@ def x_timeline_crawl(user_id: str, db_task_id: int = None,
 
     Args:
         user_id: X 用户名
-        max_new_posts: 最多抓几条新帖 (默认1)
+        max_new_posts: 最多抓几条新帖 (默认0=不限制)
         cutoff_seconds: 时间截止秒数 (默认604800 = 7天)
     """
     if max_new_posts is None:
-        max_new_posts = 1
+        max_new_posts = 0
     if cutoff_seconds is None:
         cutoff_seconds = 604800  # 7 天
     count = _crawl_timeline(user_id, max_new_posts=max_new_posts,
