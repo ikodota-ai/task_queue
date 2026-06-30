@@ -961,7 +961,7 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
 
     star_id = _lookup_star_id(user_id)
     if star_id is None:
-        logger.warning(f"No star_id found for {user_id}, DB insert disabled")
+        logger.info(f"No star_id found for {user_id}, treating as media account")
 
     # 提取头像：优先 la_star_info.avatar，否则从推文页面提取
     avatar_url = _get_star_avatar(star_id) if star_id else ""
