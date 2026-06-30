@@ -1036,7 +1036,7 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
             # ---- 4. 提取文本 (可选，记录日志) ----
             try:
                 text_el = article.find_element(By.XPATH, ".//div[@data-testid='tweetText']")
-                tweet_text = text_el.text[:200] if text_el else ""
+                tweet_text = text_el.text if text_el else ""
             except Exception:
                 tweet_text = ""
 
