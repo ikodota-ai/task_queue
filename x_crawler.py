@@ -1119,7 +1119,7 @@ def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) ->
             new_posts += 1
 
             # ---- 8. 写入 la_article (AI翻译 + 电影匹配) ----
-            if star_id and tweet_text:
+            if tweet_text:
                 try:
                     import re as _re
                     raw_hashtags = _re.findall(r'#\w+', tweet_text)
@@ -1334,14 +1334,13 @@ def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
     content_html = _build_tweet_html(user_id, cn_text, original_text,
                                      image_paths, post_ts)
 
-    # 4. 查找 couples
-    couples = _find_couple_ids(star_id)
+    # 4. 查找 couples（star_id 为 0/None 时当作媒体号，cpid=0）
+    couples = _find_couple_ids(star_id) if star_id else []
     if not couples:
-        logger.warning(f"No couple found for star_id={star_id}, skip article insert")
-        return []
+        couples = [{"id": 0, "name": ""}]  # 媒体号，无 couple
 
-    # 5. 封面图：优先 la_star_info.avatar，否则用推文内提取的头像
-    cover_image = avatar_url or _get_star_avatar(star_id)
+    # 5. 封面图
+    cover_image = avatar_url or (_get_star_avatar(star_id) if star_id else "")
 
     # 6. 插入（url 留空）
     now = int(time.time())
@@ -1354,10 +1353,12 @@ def _insert_tweet_article(user_id: str, tweet_id: str, star_id: int,
         cp_name = cp["name"]
 
         title_line = cn_text.split("\n")[0][:80] if cn_text else original_text[:80]
-        title = f"[{cp_name}] {title_line}"
+        if cp_name:
+            title = f"[{cp_name}] {title_line}"
+        else:
+            title = title_line  # 媒体号不加 CP 前缀
 
         try:
-            # 去重用 tweet_id + cpid
             cur.execute(
                 "SELECT id FROM la_article WHERE title=%s AND cpid=%s LIMIT 1",
                 (title, cpid),
