@@ -940,6 +940,7 @@ def _crawl_timeline(user_id: str, max_new_posts: int = 0,
 
 
 def _do_crawl_timeline(user_id: str, max_new_posts: int, cutoff_seconds: int) -> int:
+    _refresh_star_couple_cache()  # 每次爬取前刷新，确保新 couple 生效
     driver = _get_driver()
     processed = 0
     new_posts = 0       # 本次新抓的推文数
@@ -1185,8 +1186,15 @@ def _load_star_couple_map():
             _star_couple_cache.setdefault(sid, []).append(
                 {"id": cid, "name": cname}
             )
-    logger.info(f"Loaded {len(_star_couple_cache)} star→couple mappings")
+    logger.info(f"Loaded {len(_star_couple_cache)} star→couple mappings, cache_ts={int(time.time())}")
     return _star_couple_cache
+
+
+def _refresh_star_couple_cache():
+    """强制刷新 star→couple 缓存（新增 couple 后调用）。"""
+    global _star_couple_cache
+    _star_couple_cache = None
+    _load_star_couple_map()
 
 
 def _find_couple_ids(star_id: int) -> list:
